@@ -744,10 +744,14 @@
     label.appendChild(document.createTextNode('Trainer mode'));
     const hint = el('span', { className: 'pp-trainer-hint', text: 'Highlight scoring links on the page' });
     label.appendChild(hint);
-    const sw = el('div', { className: 'pp-switch' });
+    // Wrap the switch in a <label> so clicking the pill toggles the checkbox
+    // even though the checkbox itself is visually hidden.
+    const sw = document.createElement('label');
+    sw.className = 'pp-switch';
+    sw.htmlFor = 'pp-trainer-toggle';
     const input = document.createElement('input');
     input.type = 'checkbox'; input.id = 'pp-trainer-toggle'; input.checked = !!ui.trainer;
-    const slider = document.createElement('div'); slider.className = 'pp-slider';
+    const slider = document.createElement('span'); slider.className = 'pp-slider';
     sw.appendChild(input);
     sw.appendChild(slider);
     trainerRow.appendChild(label);
