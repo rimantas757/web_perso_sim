@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.08.21.1302
+// @version      2026.08.21.1309
 // @description  Client-side personalisation engine — tag pages, score topics, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -344,6 +344,40 @@
       background: #4d726d; color: #fff; text-decoration: none; font-size: 0.8rem; font-weight: 600;
       letter-spacing: 1.5px; text-transform: uppercase; }
 
+    /* Trainer toggle + pulse overlays */
+    #pp-panel .pp-trainer-row { display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 8px 10px; background: #f7f7f2; border: 1px solid #eee; border-radius: 6px; margin-bottom: 12px; }
+    #pp-panel .pp-trainer-row label { font-weight: 600; font-size: 11px; color: #444;
+      text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; user-select: none; }
+    #pp-panel .pp-trainer-row .pp-trainer-hint { display: block; color: #888; font-size: 10px;
+      font-weight: 400; text-transform: none; letter-spacing: 0; margin-top: 2px; }
+    /* Simple pill toggle */
+    #pp-panel .pp-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: 0 0 40px; }
+    #pp-panel .pp-switch input { opacity: 0; width: 0; height: 0; }
+    #pp-panel .pp-switch .pp-slider { position: absolute; inset: 0; background: #ccc; border-radius: 22px; transition: 0.2s; cursor: pointer; }
+    #pp-panel .pp-switch .pp-slider::before { content: ''; position: absolute; height: 16px; width: 16px;
+      left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    #pp-panel .pp-switch input:checked + .pp-slider { background: #4d726d; }
+    #pp-panel .pp-switch input:checked + .pp-slider::before { transform: translateX(18px); }
+
+    /* Legend of topic colors when trainer is on */
+    #pp-panel .pp-trainer-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
+    #pp-panel .pp-trainer-legend li { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 5px;
+      border-radius: 3px; font-size: 10px; color: #333; background: #f7f7f2; border: 1px solid #eee; }
+    #pp-panel .pp-trainer-legend .pp-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+
+    /* Pulse outlines are added directly to matching <a> elements */
+    @keyframes pp-pulse {
+      0%, 100% { box-shadow: 0 0 0 2px var(--pp-pulse-color), 0 0 0 4px rgba(255,255,255,0.6), 0 0 12px 2px var(--pp-pulse-color); }
+      50%      { box-shadow: 0 0 0 3px var(--pp-pulse-color), 0 0 0 6px rgba(255,255,255,0.75), 0 0 20px 6px var(--pp-pulse-color); }
+    }
+    a[data-pp-trainer] { position: relative; border-radius: 3px; animation: pp-pulse 1.6s ease-in-out infinite;
+      outline: none !important; transition: none; }
+    a[data-pp-trainer]::after { content: attr(data-pp-trainer); position: absolute; top: -8px; right: -8px;
+      background: var(--pp-pulse-color); color: #fff; font: 700 10px/1.4 -apple-system, sans-serif;
+      padding: 1px 6px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); pointer-events: none;
+      z-index: 2147483640; white-space: nowrap; }
+
     /* AI-author modal */
     #pp-ai-modal .pp-ai-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483643; }
     #pp-ai-modal .pp-ai-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
@@ -612,7 +646,154 @@
   }
 
   // -------------------- Runtime view --------------------
+  // -------------------- Trainer mode --------------------
+  // When enabled, every <a href> whose URL would match a urlRule gets a
+  // pulsing outline colored by the topic it contributes to. Helps rehearse
+  // click paths before a customer demo.
+  let __trainerObserver = null;
+  let __trainerDebounce = null;
+
+  // Deterministic HSL color per topic id -- same id always maps to same color.
+  function topicColor(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+    const hue = Math.abs(h) % 360;
+    return `hsl(${hue}, 70%, 45%)`;
+  }
+
+  // Turn an anchor's href into (url, path) tuple compatible with patternMatches.
+  function anchorTarget(a) {
+    try {
+      const u = new URL(a.getAttribute('href'), window.location.href);
+      // Only consider same-origin links; cross-origin links won't score under
+      // the normal engine flow either.
+      if (u.origin !== window.location.origin) return null;
+      return { url: u.href, path: u.pathname + u.search };
+    } catch (e) { return null; }
+  }
+
+  // Which topics would this anchor contribute to, and what's the summed weight?
+  function anchorContribution(a) {
+    const target = anchorTarget(a);
+    if (!target) return null;
+    const byTopic = new Map();
+    for (const rule of config.urlRules) {
+      if (patternMatches(rule.pattern, rule.kind, target.url, target.path)) {
+        byTopic.set(rule.topicId, (byTopic.get(rule.topicId) || 0) + (rule.weight || 1));
+      }
+    }
+    if (!byTopic.size) return null;
+    return byTopic;
+  }
+
+  function applyTrainerToAnchor(a) {
+    const contrib = anchorContribution(a);
+    if (!contrib) {
+      if (a.hasAttribute('data-pp-trainer')) removeTrainerFromAnchor(a);
+      return;
+    }
+    // Build label like "+1 Sri Lanka" or "+3 (2 topics)" for multi-topic anchors
+    let label;
+    let color;
+    if (contrib.size === 1) {
+      const [topicId, weight] = contrib.entries().next().value;
+      const topic = config.topics.find(t => t.id === topicId);
+      label = `+${weight} ${topic ? topic.label : topicId}`;
+      color = topicColor(topicId);
+    } else {
+      const total = [...contrib.values()].reduce((s, w) => s + w, 0);
+      label = `+${total} (${contrib.size} topics)`;
+      // Mix: use the first topic's color as the base
+      color = topicColor(contrib.keys().next().value);
+    }
+    a.setAttribute('data-pp-trainer', label);
+    a.style.setProperty('--pp-pulse-color', color);
+  }
+
+  function removeTrainerFromAnchor(a) {
+    a.removeAttribute('data-pp-trainer');
+    a.style.removeProperty('--pp-pulse-color');
+  }
+
+  function scanTrainer() {
+    if (!ui.trainer) return;
+    // Only apply to anchors that have an href. Skip anchors inside our own panel.
+    const anchors = document.querySelectorAll('a[href]');
+    for (const a of anchors) {
+      if (a.closest && a.closest('#pp-panel')) continue;
+      applyTrainerToAnchor(a);
+    }
+  }
+
+  function scheduleTrainerScan() {
+    if (__trainerDebounce) clearTimeout(__trainerDebounce);
+    __trainerDebounce = setTimeout(scanTrainer, 120);
+  }
+
+  function enableTrainer() {
+    scanTrainer();
+    if (__trainerObserver) return;
+    __trainerObserver = new MutationObserver(scheduleTrainerScan);
+    __trainerObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
+    // Also re-scan on SPA navigation (custom event dispatched by our own hook)
+    window.addEventListener('personalise:navigate', scheduleTrainerScan);
+  }
+
+  function disableTrainer() {
+    if (__trainerObserver) { __trainerObserver.disconnect(); __trainerObserver = null; }
+    window.removeEventListener('personalise:navigate', scheduleTrainerScan);
+    // Strip all applied outlines
+    document.querySelectorAll('a[data-pp-trainer]').forEach(removeTrainerFromAnchor);
+  }
+
+  function refreshTrainer() {
+    if (ui.trainer) enableTrainer();
+    else disableTrainer();
+  }
+
   function renderRuntime(body) {
+    // Trainer toggle -- sits at the very top of Runtime so it's immediate.
+    const trainerRow = el('div', { className: 'pp-trainer-row' });
+    const label = document.createElement('label');
+    label.htmlFor = 'pp-trainer-toggle';
+    label.appendChild(document.createTextNode('Trainer mode'));
+    const hint = el('span', { className: 'pp-trainer-hint', text: 'Highlight scoring links on the page' });
+    label.appendChild(hint);
+    const sw = el('div', { className: 'pp-switch' });
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.id = 'pp-trainer-toggle'; input.checked = !!ui.trainer;
+    const slider = document.createElement('div'); slider.className = 'pp-slider';
+    sw.appendChild(input);
+    sw.appendChild(slider);
+    trainerRow.appendChild(label);
+    trainerRow.appendChild(sw);
+    body.appendChild(trainerRow);
+
+    // Legend (only when trainer is on and there are topics with URL rules)
+    if (ui.trainer && config.topics.length) {
+      const topicIdsInUse = new Set(config.urlRules.map(r => r.topicId));
+      const legendTopics = config.topics.filter(t => topicIdsInUse.has(t.id));
+      if (legendTopics.length) {
+        const legend = el('ul', { className: 'pp-trainer-legend' });
+        for (const t of legendTopics) {
+          const li = el('li');
+          const sw2 = el('span', { className: 'pp-swatch' });
+          sw2.style.background = topicColor(t.id);
+          li.appendChild(sw2);
+          li.appendChild(document.createTextNode(t.label));
+          legend.appendChild(li);
+        }
+        body.appendChild(legend);
+      }
+    }
+
+    input.addEventListener('change', () => {
+      ui.trainer = input.checked;
+      saveUi();
+      refreshTrainer();
+      renderPanel();
+    });
+
     body.appendChild(el('h4', { text: 'Tag scores' }));
     const tagList = el('ul');
     if (!config.topics.length) tagList.appendChild(el('li', { className: 'pp-empty', text: 'No topics yet' }));
@@ -1510,6 +1691,8 @@ explanation, no code fences. Every string value must be pure ASCII (with
     preApplyPaintedRules();
     renderPanel();
     installNavigationHooks();
+    // If trainer mode was on last session, re-enable it now that DOM is ready.
+    if (ui.trainer) refreshTrainer();
     console.info('[personalise] engine ready', { client: config.client, mode: ui.mode, state });
   }
 
