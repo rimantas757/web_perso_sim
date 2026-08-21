@@ -1357,24 +1357,36 @@ STRING ENCODING (IMPORTANT - do not skip)
 - Every string value in the JSON output must be pure 7-bit ASCII.
 - If a description, topic label, popup body, or runScript code needs a
   non-ASCII character (em dash, arrow, sparkles, curly quotes, accented
-  letters, any emoji), encode it as a JSON \\\\uXXXX escape sequence.
+  letters, any emoji), encode it as a JSON \\uXXXX escape sequence.
   Examples (left = what to output, right = what it decodes to for the user):
-    "Sri Lanka \\\\u2014 cultural triangle"     ->  Sri Lanka + em dash + cultural triangle
-    "\\\\u2728 Highlight for repeat visitors"    ->  sparkles + Highlight...
-    "Caf\\\\u00e9 & Concierge"                    ->  Caf + e-acute + " & Concierge"
-    "Ready \\\\u2192 start your journey"        ->  Ready + right-arrow + start...
+    "Sri Lanka \\u2014 cultural triangle"     ->  Sri Lanka + em dash + cultural triangle
+    "\\u2728 Highlight for repeat visitors"    ->  sparkles + Highlight...
+    "Caf\\u00e9 & Concierge"                    ->  Caf + e-acute + " & Concierge"
+    "Ready \\u2192 start your journey"        ->  Ready + right-arrow + start...
 - Do NOT emit raw multi-byte UTF-8 characters. They get mangled by some
   clipboard / editor / import pipelines and render as mojibake in the UI.
 - Never use "smart" curly quotes or typographic dashes; prefer plain
-  ASCII ' " - unless the \\\\uXXXX escape form is used.
-- JSON parsers decode \\\\uXXXX to the correct Unicode codepoint at parse
+  ASCII ' " - unless the \\uXXXX escape form is used.
+- JSON parsers decode \\uXXXX to the correct Unicode codepoint at parse
   time, so the escaped form displays exactly the same to the user AND is
   immune to encoding pipeline corruption.
 
-OUTPUT
-Output ONLY the JSON object described above. No introduction, no
-explanation, no code fences. Every string value must be pure ASCII (with
-\\\\uXXXX escapes where needed). The output must parse cleanly with JSON.parse.`;
+OUTPUT (deliver as a downloadable JSON file)
+Produce a real JSON FILE for me to download, not just JSON text in chat.
+
+- File name (use exactly this): web_perso_story__${host}__${todayStamp()}.json
+- File contents: ONLY the JSON object described above. No prose, no code
+  fences, no comments, no trailing text. Must parse cleanly with JSON.parse.
+- Every string value must be pure ASCII (with \\uXXXX escapes where needed).
+- Use your interface's file / attachment / canvas / artifact feature so I
+  can click a download link and save the .json to disk in one step.
+- If your interface truly cannot produce a downloadable file, print the
+  JSON as ONE fenced code block labelled json and explicitly tell me to
+  save it with the filename above. In that case, still keep the response
+  content itself as JSON only -- no prose around the fence.
+
+I will import that file directly into the Personalise panel via
+Config -> Save/load story -> Import.`;
   }
 
   function openAiPromptModal() {
