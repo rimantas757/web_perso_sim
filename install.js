@@ -83,23 +83,66 @@
     return stripped.join('\n') + tail;
   }
 
-  function installPerSite() {
-    if (!engineSource) return;
+  // Keep the last-built scoped source so the fallback flow can reach it.
+  let lastScopedSource = null;
+
+  function buildScopedSource() {
+    if (!engineSource) return null;
     const host = parseHost(urlInput.value);
-    if (scope !== 'any' && !host) { updatePreview(); return; }
+    if (scope !== 'any' && !host) { updatePreview(); return null; }
     const matches = matchesFor(host, scope);
-    const scoped = rewriteMatches(engineSource, matches);
-    // Serve as a blob with application/javascript so Tampermonkey's install
-    // sniffer picks up the .user.js header.
+    return rewriteMatches(engineSource, matches);
+  }
+
+  function installPerSite() {
+    const scoped = buildScopedSource();
+    if (!scoped) return;
+    lastScopedSource = scoped;
+
+    // Primary path: create an anchor with download="personalise.user.js" and
+    // click it. Because the destination filename ends in .user.js, Tampermonkey's
+    // download interceptor recognises it and offers the install dialog even
+    // though the URL itself is a blob: URL.
     const blob = new Blob([scoped], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
-    // Open in a new tab. Tampermonkey intercepts and shows the install dialog.
-    // We can't set a filename on the URL, but Tampermonkey doesn't need one —
-    // it recognises the .user.js metadata block from the content.
-    window.open(url, '_blank');
-    // Revoke after a beat to avoid leaking the blob; Tampermonkey will have
-    // already grabbed the content synchronously on open.
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'personalise.user.js';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+
+    // Reveal the fallback panel — the user may or may not need it depending
+    // on their browser + Tampermonkey combo.
+    revealFallback();
+  }
+
+  function revealFallback() {
+    let fb = document.getElementById('install-fallback');
+    if (!fb) return;
+    fb.style.display = 'block';
+  }
+
+  async function copyScopedToClipboard(btn) {
+    const scoped = lastScopedSource || buildScopedSource();
+    if (!scoped) return;
+    try {
+      await navigator.clipboard.writeText(scoped);
+      const orig = btn.textContent;
+      btn.textContent = 'Copied ✓ — now paste in Tampermonkey';
+      setTimeout(() => btn.textContent = orig, 3000);
+    } catch (err) {
+      // Fallback for older browsers: put in a textarea and select it
+      const ta = document.createElement('textarea');
+      ta.value = scoped; ta.style.cssText = 'position:fixed;left:-9999px';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); btn.textContent = 'Copied ✓'; }
+      catch (e) { alert('Could not copy — select the code manually.'); }
+      ta.remove();
+    }
   }
 
   // -------------------- Boot --------------------
@@ -134,6 +177,17 @@
   });
 
   installBtn.addEventListener('click', installPerSite);
+
+  const fbCopyBtn = document.getElementById('fb-copy');
+  const fbOpenBtn = document.getElementById('fb-open');
+  if (fbCopyBtn) fbCopyBtn.addEventListener('click', () => copyScopedToClipboard(fbCopyBtn));
+  if (fbOpenBtn) fbOpenBtn.addEventListener('click', () => {
+    // Tampermonkey's "add new script" page opens differently per browser and
+    // per install; we can't reliably link to it. Guide the user to the
+    // Tampermonkey icon in their toolbar instead. But we can open the docs
+    // page which has a screenshot of exactly where to click.
+    window.open('https://www.tampermonkey.net/faq.php#Q102', '_blank', 'noopener');
+  });
 
   updatePreview();
 })();

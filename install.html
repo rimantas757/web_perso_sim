@@ -102,10 +102,27 @@
     </div>
 
     <p class="hint">
-      Clicking <b>Install</b> opens Tampermonkey's install dialog with your <code>@match</code> pre-filled.
-      Click <b>Install</b> inside the dialog to confirm.
+      Clicking <b>Install</b> triggers a <code>personalise.user.js</code> download. Tampermonkey should intercept it and show its install dialog with your <code>@match</code> pre-filled. Click <b>Install</b> inside that dialog to confirm.
     </p>
-    <p class="hint">
+
+    <div id="install-fallback" style="display:none; margin-top: 16px; padding: 14px 16px; background: #fff8e6; border: 1px solid #f0d97a; border-radius: 6px;">
+      <p style="margin-top: 0; font-weight: 600; color: #7a5c00;">Didn't see the Tampermonkey install dialog?</p>
+      <p style="font-size: 13px; margin: 6px 0 10px;">
+        Sometimes the browser just downloads the file or opens it as plain text. Use this fallback:
+      </p>
+      <ol style="margin: 4px 0 12px; padding-left: 22px; font-size: 13px;">
+        <li>Click <b>Copy scoped code</b> below.</li>
+        <li>Click the Tampermonkey icon in your browser toolbar → <b>Create a new script…</b>.</li>
+        <li>Select all the placeholder code in the new tab and paste (Ctrl/Cmd + V).</li>
+        <li>Save (Ctrl/Cmd + S). Done.</li>
+      </ol>
+      <div class="actions-row" style="margin: 6px 0 0;">
+        <button class="install" id="fb-copy" type="button" style="background: #7a5c00;">📋 Copy scoped code</button>
+        <button class="install" id="fb-open" type="button" style="background: #fff; color: #7a5c00 !important; border: 1px solid #7a5c00; box-shadow: none;">Where's the Tampermonkey icon?</button>
+      </div>
+    </div>
+
+    <p class="hint" style="margin-top: 12px;">
       Prefer to install the generic (any-site) version and set <code>@match</code> yourself?
       <a href="./personalise.user.js" id="generic-link">Install the generic userscript →</a>
     </p>
