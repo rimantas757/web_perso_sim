@@ -12,6 +12,8 @@
     --bg: #fafaf7;
     --accent: #4d726d;
     --accent-hover: #3a5a55;
+    --brand: #00A1E0;
+    --brand-hover: #0091cf;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
@@ -28,12 +30,31 @@
   p.hint { color: var(--muted); font-size: 13px; }
   .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 20px 24px; margin: 12px 0 20px; }
   .card--primary { border-color: var(--accent); border-width: 2px; }
+
+  input[type=url] { width: 100%; padding: 12px 14px; font-size: 15px; border: 1px solid #d0d0d0;
+    border-radius: 6px; background: #fff; color: var(--ink); font-family: inherit; }
+  input[type=url]:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77,114,109,0.15); }
+  input[type=url].is-error { border-color: #b03a2e; }
+
+  .preview { margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
+  .preview code { background: #f0efeb; padding: 3px 8px; border-radius: 4px; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; color: var(--ink); }
+  .preview.is-error { color: #b03a2e; }
+  .preview.is-error code { background: #fbeae7; color: #7a281f; }
+
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+  .preset { padding: 6px 12px; background: #f0efeb; border: 1px solid #e0dfda; border-radius: 4px;
+    font-size: 12px; cursor: pointer; color: #444; }
+  .preset:hover { background: #e5e4df; }
+  .preset.is-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
   a.install { display: inline-block; padding: 12px 22px; background: var(--accent); color: #fff !important;
     text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 15px; letter-spacing: 0.3px;
-    box-shadow: 0 2px 10px rgba(77,114,109,0.25); }
+    box-shadow: 0 2px 10px rgba(77,114,109,0.25); cursor: pointer; border: 0; font-family: inherit; }
   a.install:hover { background: var(--accent-hover); }
-  .actions-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0 8px; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+  a.install.is-disabled { background: #ccc; cursor: not-allowed; box-shadow: none; pointer-events: none; }
+  .actions-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 16px 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     background: #f0efeb; padding: 1px 6px; border-radius: 3px; font-size: 13px; }
   .stats { color: var(--muted); font-size: 12px; }
   .stats b { color: var(--ink); font-weight: 600; }
@@ -48,50 +69,61 @@
 <div class="wrap">
   <header>
     <h1>Personalise <span>·</span> install</h1>
-    <p class="subtitle">A tiny website personalization engine that auto-loads on every page you visit.
+    <p class="subtitle">A tiny website personalization engine that auto-loads on every page of a chosen site.
       Tag pages while you browse, then wire rules that swap heroes, tweak buttons, show popups, or run custom scripts
       when a topic score crosses a threshold.</p>
   </header>
 
   <h2><span class="step">1</span>Install Tampermonkey</h2>
   <div class="card">
-    <p>Tampermonkey is a free browser extension that runs userscripts on every page. If you already have it, skip to step&nbsp;2.</p>
+    <p>Tampermonkey is a free browser extension that runs userscripts on the sites you tell it to. If you already have it, skip to step&nbsp;2.</p>
     <p><a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Get Tampermonkey →</a> (Chrome, Edge, Firefox, Safari, Opera).</p>
   </div>
 
-  <h2><span class="step">2</span>Install the Personalise userscript</h2>
+  <h2><span class="step">2</span>Where should Personalise run?</h2>
   <div class="card card--primary">
-    <p><b>Click the button below.</b> Tampermonkey will open its install dialog — click <b>Install</b> in there and you're done.</p>
-    <div class="actions-row">
-      <a href="./personalise.user.js" class="install" id="install-btn">
-        ⚡ Install Personalise
-      </a>
-      <span class="stats" id="install-stats">Loading…</span>
+    <p>Paste the URL of the site you want to personalise. We'll scope the userscript to that hostname so it doesn't run anywhere else.</p>
+
+    <input type="url" id="site-url" placeholder="https://www.audleytravel.com" autocomplete="off" spellcheck="false">
+
+    <div class="presets" id="presets">
+      <span class="preset" data-scope="hostname">Just this hostname</span>
+      <span class="preset is-active" data-scope="domain">Whole domain (incl. subdomains)</span>
+      <span class="preset" data-scope="any">Any site</span>
     </div>
+
+    <div class="preview" id="preview">Enter a URL above to see the match pattern.</div>
+
+    <div class="actions-row">
+      <button class="install is-disabled" id="install-btn" type="button">
+        ⚡ Install for this site
+      </button>
+      <span class="stats" id="install-stats">Loading engine…</span>
+    </div>
+
     <p class="hint">
-      By default the script runs on <code>*://*/*</code> — every website you visit. To scope it to one site, open the
-      Tampermonkey dashboard, click the Personalise script, and change the <code>@match</code> line
-      (e.g. <code>*://*.audleytravel.com/*</code>).
+      Clicking <b>Install</b> opens Tampermonkey's install dialog with your <code>@match</code> pre-filled.
+      Click <b>Install</b> inside the dialog to confirm.
+    </p>
+    <p class="hint">
+      Prefer to install the generic (any-site) version and set <code>@match</code> yourself?
+      <a href="./personalise.user.js" id="generic-link">Install the generic userscript →</a>
     </p>
   </div>
 
   <h2><span class="step">3</span>Use it</h2>
   <div class="card">
     <ol>
-      <li>Go to any website. A green <b>Personalise</b> panel appears in the bottom-right.</li>
-      <li>Switch to the <b>Config</b> tab.</li>
-      <li>Rename <b>Topics</b> to whatever segments you care about (e.g. <i>Sri Lanka interest</i>, <i>Family holidays</i>).</li>
+      <li>Go to the site you scoped the script to. A blue Salesforce cloud badge appears in the bottom-right.</li>
+      <li>Click <b>+</b> on the badge to expand the panel. Switch to the <b>Config</b> tab.</li>
+      <li>Rename <b>Topics</b> to the segments you care about (e.g. <i>Sri Lanka interest</i>, <i>Family holidays</i>).</li>
       <li>Browse to a page and click <b>Add rule</b> — that URL now contributes to the topic you chose.</li>
       <li>Click <b>+ Add threshold rule for this page</b> to wire what happens when the score hits your threshold.
-        Pick <b>Swap image</b>, <b>Popup</b>, or <b>Run script</b> for full control. Use <b>Pick</b> to click any element on the page and capture its CSS selector.</li>
-      <li>Switch back to <b>Runtime</b> to see live scores. Reloads and navigations are persistent — the userscript re-runs on every page.</li>
+        Pick <b>Swap image</b>, <b>Popup</b>, or <b>Run script</b>. Use <b>Pick</b> to click any element on the page and capture its CSS selector.</li>
+      <li>Use <b>⬇ Export</b> / <b>⬆ Import</b> in the Config tab to save your setup as a JSON file
+        (<code>web_perso_story__&lt;hostname&gt;__&lt;date&gt;.json</code>) and share it or restore later.</li>
+      <li>Switch back to <b>Runtime</b> to see live scores. Reloads and navigations persist — the userscript re-runs on every page.</li>
     </ol>
-  </div>
-
-  <h2>How updates work</h2>
-  <div class="card">
-    <p>Tampermonkey checks <code>@updateURL</code> daily and quietly pulls new versions. To force an immediate refresh,
-      open the Tampermonkey dashboard → click the utilities tab → <b>Check for userscript updates</b>.</p>
   </div>
 
   <footer>
