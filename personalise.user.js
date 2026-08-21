@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.08.21.1133
+// @version      2026.08.21.1200
 // @description  Client-side personalisation engine — tag pages, score topics, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -222,18 +222,37 @@
 
   // -------------------- Panel styles --------------------
   const PANEL_CSS = `
-    #pp-panel { position: fixed; bottom: 16px; right: 16px; z-index: 999999;
+    /* z-index 2147483647 = max signed int; sits above any chatbot/consent widget.
+       isolation:isolate prevents a parent creating a new stacking context that traps us. */
+    #pp-panel { position: fixed; z-index: 2147483647; isolation: isolate;
       font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       color: #222; background: #fff; border: 1px solid #d8d8d8;
-      box-shadow: 0 12px 40px rgba(0,0,0,0.18); border-radius: 8px;
-      width: 340px; overflow: hidden; }
+      box-shadow: 0 12px 40px rgba(0,0,0,0.28); border-radius: 8px;
+      width: 340px; overflow: hidden;
+      /* Default position (overridden by JS once ui.pos is set) */
+      bottom: 16px; right: 16px; }
+    #pp-panel.is-positioned { bottom: auto; right: auto; }
     #pp-panel__header { display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px; background: #4d726d; color: #fff; cursor: pointer; user-select: none; }
+      padding: 10px 14px; background: #4d726d; color: #fff; cursor: grab; user-select: none; touch-action: none; }
+    #pp-panel__header.is-dragging { cursor: grabbing; }
     #pp-panel__header strong { font-weight: 600; letter-spacing: 0.4px; }
     #pp-panel__client { font-size: 10px; opacity: 0.85; }
     #pp-panel__toggle { background: transparent; border: 0; color: #fff; font-size: 16px; cursor: pointer; padding: 0 4px; }
     #pp-panel__body { padding: 12px 14px; max-height: 60vh; overflow-y: auto; }
+
+    /* Collapsed = round Salesforce-blue badge with cloud SVG. Retains draggability. */
+    #pp-panel.is-collapsed { width: 56px; height: 56px; border-radius: 50%; overflow: visible;
+      background: transparent; border: 0; box-shadow: none; }
     #pp-panel.is-collapsed #pp-panel__body { display: none; }
+    #pp-panel.is-collapsed #pp-panel__header { padding: 0; background: #00A1E0;
+      width: 56px; height: 56px; border-radius: 50%; justify-content: center; align-items: center;
+      box-shadow: 0 6px 24px rgba(0,161,224,0.5); border: 2px solid #fff; }
+    #pp-panel.is-collapsed #pp-panel__header:hover { background: #0091cf; }
+    #pp-panel.is-collapsed .pp-badge-content { display: block; }
+    #pp-panel.is-collapsed .pp-expanded-header { display: none; }
+    #pp-panel:not(.is-collapsed) .pp-badge-content { display: none; }
+    #pp-panel .pp-badge-content { width: 40px; height: 40px; }
+    #pp-panel .pp-badge-content svg { width: 100%; height: 100%; }
 
     #pp-panel .pp-mode-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid #eee; }
     #pp-panel .pp-mode-tab { flex: 1; padding: 8px; text-align: center; cursor: pointer; font-size: 11px;
@@ -249,6 +268,7 @@
     #pp-panel .pp-score { font-weight: 600; color: #4d726d; }
     #pp-panel .pp-fired { color: #1f6fb0; font-weight: 600; }
     #pp-panel .pp-empty { color: #999; font-style: italic; padding: 4px 0; }
+    #pp-panel .pp-hint { color: #888; font-size: 10px; margin: 4px 0 8px; font-style: italic; }
     #pp-panel .pp-url { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
     #pp-panel .pp-current-url { background: #f7f7f7; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; }
     #pp-panel .pp-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
@@ -293,18 +313,18 @@
     #pp-panel .pp-thr-actions .pp-btn { flex: 1; }
 
     /* Pick-element overlay — a fixed div on top of the current hovered element */
-    #pp-pick-overlay { position: fixed; pointer-events: none; z-index: 999997;
+    #pp-pick-overlay { position: fixed; pointer-events: none; z-index: 2147483645;
       border: 2px solid #ff6b3d; background: rgba(255,107,61,0.12); transition: all 60ms linear; }
-    #pp-pick-hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 999999;
+    #pp-pick-hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 2147483646;
       background: #222; color: #fff; padding: 10px 16px; border-radius: 6px;
       font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
     #pp-pick-hint kbd { background: #444; padding: 2px 6px; border-radius: 3px; font-family: inherit; margin: 0 2px; }
     body.pp-picking, body.pp-picking * { cursor: crosshair !important; }
 
-    #personalise-popup .pp-popup__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 999998; }
+    #personalise-popup .pp-popup__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2147483643; }
     #personalise-popup .pp-popup__box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-      z-index: 999999; background: #fff; padding: 32px; max-width: 420px; border-radius: 8px;
+      z-index: 2147483644; background: #fff; padding: 32px; max-width: 420px; border-radius: 8px;
       font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
     #personalise-popup .pp-popup__box h3 { margin: 0 0 12px; font: italic 1.4rem "Merriweather", Georgia, serif; }
     #personalise-popup .pp-popup__close { position: absolute; top: 8px; right: 12px; background: transparent;
@@ -410,6 +430,81 @@
   }
 
   // -------------------- Panel rendering --------------------
+  // Inline Salesforce cloud SVG — no network fetch, works even offline / behind CSP.
+  const SF_CLOUD_SVG = '<svg viewBox="0 0 273 191" xmlns="http://www.w3.org/2000/svg" aria-label="Salesforce">'
+    + '<path fill="#ffffff" d="M113.6 41.7c8.8-9.2 21-14.9 34.5-14.9 18 0 33.7 10 42.1 24.9 7.3-3.3 15.3-5.1 23.8-5.1 32.6 0 59.1 26.7 59.1 59.7 0 33-26.4 59.7-59.1 59.7-4 0-7.9-.4-11.7-1.2-7.4 13.2-21.5 22.1-37.7 22.1-6.8 0-13.2-1.6-18.9-4.4-7.5 17.6-24.9 30-45.2 30-21.2 0-39.2-13.4-46.1-32.1-3 .6-6.1 1-9.4 1C22.3 181.5 0 158.9 0 131c0-18.7 10.1-35 25-43.7-3.1-7.1-4.8-14.9-4.8-23.2C20.2 31.5 46.6 5.1 79 5.1c19 0 36 9 46.9 23 3.6-3.7 7.9-6.7 12.7-8.9-13.7-4.8-25-14-25-14z"/>'
+    + '</svg>';
+
+  function applyPositionToPanel(panel) {
+    if (ui.pos && typeof ui.pos.left === 'number' && typeof ui.pos.top === 'number') {
+      const w = panel.offsetWidth || (ui.collapsed ? 56 : 340);
+      const h = panel.offsetHeight || 400;
+      // Clamp to viewport so a resize doesn't strand it off-screen
+      const maxLeft = Math.max(0, window.innerWidth - w);
+      const maxTop = Math.max(0, window.innerHeight - h);
+      panel.style.left = Math.min(Math.max(0, ui.pos.left), maxLeft) + 'px';
+      panel.style.top = Math.min(Math.max(0, ui.pos.top), maxTop) + 'px';
+      panel.classList.add('is-positioned');
+    }
+  }
+
+  function attachDrag(panel, header) {
+    let start = null;
+    function onDown(e) {
+      // Ignore drags on interactive children (buttons, links)
+      if (e.target.closest && e.target.closest('button, input, a, select, textarea')) return;
+      const rect = panel.getBoundingClientRect();
+      const pt = e.touches ? e.touches[0] : e;
+      start = { dx: pt.clientX - rect.left, dy: pt.clientY - rect.top, moved: false };
+      header.classList.add('is-dragging');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+      e.preventDefault();
+    }
+    function onMove(e) {
+      if (!start) return;
+      const pt = e.touches ? e.touches[0] : e;
+      const w = panel.offsetWidth, h = panel.offsetHeight;
+      let left = pt.clientX - start.dx;
+      let top = pt.clientY - start.dy;
+      left = Math.min(Math.max(0, left), window.innerWidth - w);
+      top = Math.min(Math.max(0, top), window.innerHeight - h);
+      panel.style.left = left + 'px';
+      panel.style.top = top + 'px';
+      panel.classList.add('is-positioned');
+      // Track movement so a small jitter click doesn't get treated as a click
+      if (Math.abs(pt.clientX - (start.dx + panel.offsetLeft)) > 3 ||
+          Math.abs(pt.clientY - (start.dy + panel.offsetTop)) > 3) {
+        start.moved = true;
+      }
+      if (e.cancelable) e.preventDefault();
+    }
+    function onUp() {
+      if (!start) return;
+      header.classList.remove('is-dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+      // Persist position
+      ui.pos = { left: parseFloat(panel.style.left) || 0, top: parseFloat(panel.style.top) || 0 };
+      saveUi();
+      // If the user actually moved, suppress the click that follows on the same event chain
+      const wasMove = start.moved;
+      start = null;
+      if (wasMove) {
+        // Absorb the immediately-following click
+        const abs = (ev) => { ev.stopPropagation(); ev.preventDefault(); document.removeEventListener('click', abs, true); };
+        document.addEventListener('click', abs, true);
+        setTimeout(() => document.removeEventListener('click', abs, true), 50);
+      }
+    }
+    header.addEventListener('mousedown', onDown);
+    header.addEventListener('touchstart', onDown, { passive: false });
+  }
+
   function renderPanel() {
     let panel = document.getElementById('pp-panel');
     if (!panel) {
@@ -424,14 +519,25 @@
 
     clear(panel);
 
-    // Header
+    // Header — same element for both expanded and collapsed; content swaps via CSS
     const header = el('div', { id: 'pp-panel__header' });
+    header.title = 'Drag to move · click to ' + (ui.collapsed ? 'expand' : 'collapse');
+
+    // Collapsed content: Salesforce cloud badge
+    const badge = el('div', { className: 'pp-badge-content' });
+    badge.innerHTML = SF_CLOUD_SVG;
+    header.appendChild(badge);
+
+    // Expanded content: title + client + collapse toggle
+    const expandedHeader = el('div', { className: 'pp-expanded-header' });
+    expandedHeader.style.cssText = 'display: flex; align-items: center; justify-content: space-between; width: 100%;';
     const headerLeft = el('div');
     headerLeft.appendChild(el('strong', { text: 'Personalise' }));
     headerLeft.appendChild(el('div', { id: 'pp-panel__client', text: config.client }));
-    const toggleBtn = el('button', { id: 'pp-panel__toggle', ariaLabel: 'Toggle', text: ui.collapsed ? '+' : '−' });
-    header.appendChild(headerLeft);
-    header.appendChild(toggleBtn);
+    const toggleBtn = el('button', { id: 'pp-panel__toggle', ariaLabel: 'Minimise', text: '−' });
+    expandedHeader.appendChild(headerLeft);
+    expandedHeader.appendChild(toggleBtn);
+    header.appendChild(expandedHeader);
     panel.appendChild(header);
 
     const body = el('div', { id: 'pp-panel__body' });
@@ -449,14 +555,19 @@
 
     panel.appendChild(body);
 
-    // Wiring
+    // Apply saved position after body is in DOM so offsetWidth/Height are correct
+    applyPositionToPanel(panel);
+
+    // Wiring — drag first so it can suppress the trailing click on move
+    attachDrag(panel, header);
     header.addEventListener('click', (e) => {
-      if (e.target.closest('button') === toggleBtn || e.target === header || e.target === headerLeft || e.target.tagName === 'STRONG' || e.target.id === 'pp-panel__client') {
-        ui.collapsed = !ui.collapsed;
-        saveUi();
-        renderPanel();
-      }
+      // Ignore clicks on inner controls; they handle their own events
+      if (e.target.closest && e.target.closest('button.pp-mode-tab, button.pp-btn, button.pp-icon, input, select, textarea, a')) return;
+      ui.collapsed = !ui.collapsed;
+      saveUi();
+      renderPanel();
     });
+    toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.collapsed = true; saveUi(); renderPanel(); });
     runtimeTab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = 'runtime'; saveUi(); renderPanel(); });
     configTab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = 'config'; saveUi(); renderPanel(); });
   }
@@ -862,40 +973,99 @@
       saveConfig(); saveState(); renderPanel();
     });
 
-    // Import / Export
+    // Import / Export — real file operations
+    body.appendChild(el('h4', { text: 'Save / load story' }));
+    const ioRow = el('div', { className: 'pp-actions-row' });
+    const exportBtn = el('button', { className: 'pp-btn', text: '⬇ Export' });
+    const importBtn = el('button', { className: 'pp-btn', text: '⬆ Import' });
+    ioRow.appendChild(exportBtn);
+    ioRow.appendChild(importBtn);
+    body.appendChild(ioRow);
+    body.appendChild(el('div', { className: 'pp-hint', text: 'Exports a JSON file: web_perso_story__<site>__<date>.json' }));
+
+    exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportStoryFile(); });
+    importBtn.addEventListener('click', (e) => { e.stopPropagation(); openImportPicker(); });
+
+    // Advanced fallback — kept behind a details toggle for copy-paste flows
     const details = document.createElement('details');
     const summary = document.createElement('summary');
-    summary.textContent = 'Import / Export JSON';
+    summary.textContent = 'Advanced: copy/paste JSON';
     details.appendChild(summary);
-
     const jsonArea = el('textarea', { className: 'pp-json' });
     jsonArea.value = JSON.stringify(config, null, 2);
     details.appendChild(jsonArea);
-
-    const ioRow = el('div', { className: 'pp-actions-row' });
-    const exportBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Copy' });
-    const importBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Apply' });
-    ioRow.appendChild(exportBtn);
-    ioRow.appendChild(importBtn);
-    details.appendChild(ioRow);
-
-    exportBtn.addEventListener('click', async (e) => {
+    const paRow = el('div', { className: 'pp-actions-row' });
+    const copyBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Copy' });
+    const applyBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Apply' });
+    paRow.appendChild(copyBtn);
+    paRow.appendChild(applyBtn);
+    details.appendChild(paRow);
+    copyBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      try { await navigator.clipboard.writeText(jsonArea.value); exportBtn.textContent = 'Copied ✓'; setTimeout(() => exportBtn.textContent = 'Copy', 1500); }
+      try { await navigator.clipboard.writeText(jsonArea.value); copyBtn.textContent = 'Copied ✓'; setTimeout(() => copyBtn.textContent = 'Copy', 1500); }
       catch (err) { jsonArea.select(); }
     });
-    importBtn.addEventListener('click', (e) => {
+    applyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      try {
-        const parsed = JSON.parse(jsonArea.value);
-        if (!parsed || !Array.isArray(parsed.topics) || !Array.isArray(parsed.urlRules)) throw new Error('bad shape');
-        config = Object.assign(defaultConfig(), parsed);
-        saveConfig();
-        renderPanel();
-      } catch (err) { alert('Invalid JSON: ' + err.message); }
+      try { applyImportedConfig(JSON.parse(jsonArea.value)); }
+      catch (err) { alert('Invalid JSON: ' + err.message); }
     });
-
     body.appendChild(details);
+  }
+
+  // -------------------- Story export / import --------------------
+  function todayStamp() {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  function safeHost() {
+    return (window.location.hostname || 'local').replace(/[^a-z0-9.-]/gi, '_') || 'local';
+  }
+  function exportStoryFile() {
+    const filename = `web_perso_story__${safeHost()}__${todayStamp()}.json`;
+    // Wrap config with a small envelope so we can validate + version imports later
+    const payload = {
+      _kind: 'web_perso_story',
+      _version: 1,
+      _exportedAt: new Date().toISOString(),
+      _sourceHost: window.location.hostname,
+      config
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  function openImportPicker() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json,application/json';
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(reader.result);
+          // Accept both envelope form (from Export) and raw config form (for compat)
+          const cfg = parsed && parsed._kind === 'web_perso_story' && parsed.config ? parsed.config : parsed;
+          applyImportedConfig(cfg);
+        } catch (err) { alert('Import failed: ' + err.message); }
+      };
+      reader.onerror = () => alert('Could not read file');
+      reader.readAsText(file);
+    });
+    input.click();
+  }
+  function applyImportedConfig(parsed) {
+    if (!parsed || !Array.isArray(parsed.topics) || !Array.isArray(parsed.urlRules)) {
+      throw new Error('Not a valid web_perso_story config (missing topics/urlRules)');
+    }
+    config = Object.assign(defaultConfig(), parsed);
+    saveConfig();
+    renderPanel();
   }
 
   // -------------------- SPA navigation --------------------
