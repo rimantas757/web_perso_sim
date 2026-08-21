@@ -2,3 +2,10 @@
 .DS_Store
 node_modules/
 *.log
+
+# Local demo lookalike (not part of the public tool)
+index.html
+sri-lanka.html
+styles.css
+home.css
+home.js
