@@ -328,6 +328,29 @@
     #personalise-popup .pp-popup__cta { display: inline-block; margin-top: 16px; padding: 12px 28px;
       background: #4d726d; color: #fff; text-decoration: none; font-size: 0.8rem; font-weight: 600;
       letter-spacing: 1.5px; text-transform: uppercase; }
+
+    /* AI-author modal */
+    #pp-ai-modal .pp-ai-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483643; }
+    #pp-ai-modal .pp-ai-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      z-index: 2147483644; background: #fff; padding: 24px 28px; width: min(680px, 92vw); max-height: 88vh;
+      overflow-y: auto; border-radius: 10px;
+      font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4); }
+    #pp-ai-modal h3 { margin: 0 0 4px; font: 600 20px/1.3 Georgia, "Merriweather", serif; }
+    #pp-ai-modal .pp-ai-sub { color: #666; margin-bottom: 16px; font-size: 12px; }
+    #pp-ai-modal .pp-ai-label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #555; }
+    #pp-ai-modal .pp-ai-label--gap { margin-top: 20px; }
+    #pp-ai-modal textarea { width: 100%; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      border: 1px solid #d0d0d0; border-radius: 6px; resize: vertical; background: #fafafa; color: #222; box-sizing: border-box; }
+    #pp-ai-modal textarea:focus { outline: 0; border-color: #4d726d; background: #fff; }
+    #pp-ai-modal .pp-ai-row { display: flex; gap: 8px; margin-top: 8px; }
+    #pp-ai-modal .pp-btn { padding: 8px 16px; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.6px; cursor: pointer; border: 1px solid #4d726d;
+      background: #fff; color: #4d726d; border-radius: 4px; }
+    #pp-ai-modal .pp-btn:hover { background: #4d726d; color: #fff; }
+    #pp-ai-modal .pp-ai-close { position: absolute; top: 10px; right: 14px; background: transparent;
+      border: 0; font-size: 26px; cursor: pointer; color: #888; line-height: 1; }
+    #pp-ai-modal .pp-ai-close:hover { color: #222; }
   `;
 
   // -------------------- DOM helpers --------------------
@@ -794,6 +817,13 @@
 
   // -------------------- Config view --------------------
   function renderConfig(body) {
+    // AI author — first thing in Config so it's discoverable
+    body.appendChild(el('h4', { text: 'AI author' }));
+    const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '✨ Generate config with AI' });
+    aiBtn.addEventListener('click', (e) => { e.stopPropagation(); openAiPromptModal(); });
+    body.appendChild(aiBtn);
+    body.appendChild(el('div', { className: 'pp-hint', text: 'Copy a prompt for ChatGPT/Claude, paste back JSON to import.' }));
+
     // Topics
     body.appendChild(el('h4', { text: 'Topics' }));
     const topicList = el('ul');
@@ -1012,6 +1042,222 @@
       catch (err) { alert('Invalid JSON: ' + err.message); }
     });
     body.appendChild(details);
+  }
+
+  // -------------------- AI authoring prompt --------------------
+  // Assemble a prompt that teaches the LLM our config schema + authoring
+  // rules, primes it with the current site + a few example URLs from the
+  // user's existing rules, and leaves a slot for the user's intent.
+  function buildAiPrompt(userIntent) {
+    const host = window.location.hostname || '(no host)';
+    const origin = window.location.origin || '';
+    const seedUrls = new Set();
+    seedUrls.add(window.location.href);
+    for (const r of config.urlRules) {
+      // Combine pattern with origin if it looks like a path
+      if (r.pattern.startsWith('/')) seedUrls.add(origin + r.pattern);
+      else seedUrls.add(r.pattern);
+    }
+    for (const t of config.thresholdRules) {
+      for (const a of (t.appliesOn || [])) if (a.pattern) {
+        if (a.pattern.startsWith('/')) seedUrls.add(origin + a.pattern);
+        else seedUrls.add(a.pattern);
+      }
+    }
+    const urlList = [...seedUrls].slice(0, 6).map(u => '  - ' + u).join('\n');
+
+    const intent = userIntent && userIntent.trim()
+      ? userIntent.trim()
+      : '<< Describe what you want the personalisation to accomplish. Examples:\n'
+        + '   - "Boost Sri Lanka interest — swap homepage hero and CTA copy for anyone who has viewed 3+ Sri Lanka pages."\n'
+        + '   - "Highlight family holidays for repeat visitors who\'ve clicked family destinations."\n'
+        + '   - "Nudge premium travel — show a popup with a concierge CTA after 5 luxury-tier page views." >>';
+
+    return `You are helping author a JSON config for a client-side website
+personalisation engine called Personalise (web_perso_story format).
+
+TARGET SITE
+Base URL: ${origin || '(unknown — user is running locally)'}
+Hostname: ${host}
+Example URLs to look at first:
+${urlList}
+
+WHAT I WANT (user intent)
+${intent}
+
+YOUR TASK
+1. Crawl the target site starting from the example URLs above. Look at the
+   real HTML — identify hero blocks, CTAs, navigation, section headings,
+   and any content you'd want to personalise for the intent above.
+2. Propose 2–5 topics that capture the segments the intent implies.
+3. Propose urlRules that map URL patterns → topic weights so browsing the
+   site accumulates topic scores naturally. Prefer prefix or regex rules
+   that cover a section rather than an exact path per page.
+4. Propose thresholdRules that swap images, show popups, or run scripts
+   when a topic score meets its threshold. Only add rules that make sense
+   for the intent — don't invent noise.
+5. For each thresholdRule, include an appliesOn pattern so it doesn't fire
+   on unrelated pages. Leave appliesOn empty only for site-wide effects.
+6. Return ONE JSON object, no prose around it, matching the exact schema
+   below. Do not wrap it in markdown code fences.
+
+SCHEMA (must match exactly — engine imports this verbatim)
+{
+  "_kind": "web_perso_story",
+  "_version": 1,
+  "_exportedAt": "<ISO 8601 timestamp>",
+  "_sourceHost": "${host}",
+  "config": {
+    "client": "<human name for this configuration, e.g. Audley Sri Lanka boost>",
+    "topics": [
+      { "id": "<kebab-case-id>", "label": "<human label>" }
+    ],
+    "urlRules": [
+      {
+        "id": "<unique id>",
+        "pattern": "<string>",           // path, URL, prefix ending in *, or /regex/flags
+        "kind": "exact" | "prefix" | "regex",
+        "topicId": "<matches one topics[].id>",
+        "weight": <integer, typically 1..5, can be negative>
+      }
+    ],
+    "thresholdRules": [
+      {
+        "id": "<unique id>",
+        "description": "<one-line human description>",
+        "topicId": "<matches one topics[].id>",
+        "threshold": <integer, typically 2..10>,
+        "appliesOn": [
+          { "pattern": "<string>", "kind": "exact" | "prefix" | "regex" }
+        ],
+        "action": <ACTION>
+      }
+    ]
+  }
+}
+
+ACTION VARIANTS
+
+Swap image (background-image or <img src>):
+{ "type": "swapImage", "selector": "<CSS selector>", "image": "<absolute image URL>" }
+
+Show popup:
+{ "type": "popup",
+  "title": "<string>",
+  "body": "<string>",
+  "cta": { "label": "<button text>", "href": "<url>" }   // optional
+}
+
+Run script (arbitrary DOM tweaks — use ONLY when swapImage/popup can't cover it):
+{ "type": "runScript",
+  "code": "<JS body. \`rule\` and \`ctx\` are in scope. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> read-only scores/firedRules\n  ctx.log(...) -> console.info>"
+}
+
+AUTHORING RULES
+- Topic IDs must be kebab-case (sri-lanka-interest, family-focused, etc.).
+- Weights: 1 is the default per-page contribution. Use higher weights
+  (2–3) for hub / landing pages and 4+ only for very high-signal pages.
+- Prefer semantic CSS selectors (BEM-style: .brand-hero__title, .cta__button)
+  over deep :nth-of-type() chains. If the site uses utility-class frameworks
+  (Tailwind etc.), prefer data-* attributes or aria-label selectors.
+- Only pick images you can verify are hotlink-safe — Wikimedia Commons,
+  the site's own CDN, or open-license photo hosts. Never invent URLs.
+- If runScript is unavoidable, keep the snippet short (<20 lines) and
+  never touch localStorage / cookies / fetch / navigate.
+- appliesOn should be tight. A homepage-hero swap should appliesOn the
+  homepage only, not everywhere.
+- Set _exportedAt to the current UTC timestamp in ISO 8601 format.
+
+OUTPUT
+Output ONLY the JSON object described above. No introduction, no
+explanation, no code fences. The output must parse cleanly with JSON.parse.`;
+  }
+
+  function openAiPromptModal() {
+    // Reuse popup-style modal
+    if (document.getElementById('pp-ai-modal')) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'pp-ai-modal';
+    const backdrop = document.createElement('div'); backdrop.className = 'pp-ai-backdrop';
+    const box = document.createElement('div'); box.className = 'pp-ai-box';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'pp-ai-close'; closeBtn.textContent = '×'; closeBtn.setAttribute('aria-label', 'Close');
+
+    const title = document.createElement('h3'); title.textContent = 'AI-author a config';
+    const sub = document.createElement('div'); sub.className = 'pp-ai-sub';
+    sub.textContent = 'Describe what you want, copy the prompt into ChatGPT/Claude, then paste the JSON back.';
+
+    const intentLabel = document.createElement('label'); intentLabel.textContent = 'What should the personalisation do?';
+    intentLabel.className = 'pp-ai-label';
+    const intentArea = document.createElement('textarea'); intentArea.className = 'pp-ai-intent'; intentArea.rows = 3;
+    intentArea.placeholder = 'e.g. Boost Sri Lanka interest — swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
+
+    const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '📋 Copy prompt';
+    const openBtn = document.createElement('button'); openBtn.className = 'pp-btn'; openBtn.textContent = 'Open ChatGPT →';
+    openBtn.title = 'Opens chat.openai.com in a new tab';
+
+    const rowA = document.createElement('div'); rowA.className = 'pp-ai-row';
+    rowA.appendChild(copyBtn); rowA.appendChild(openBtn);
+
+    const outLabel = document.createElement('label'); outLabel.textContent = 'Paste the AI\'s JSON response here';
+    outLabel.className = 'pp-ai-label pp-ai-label--gap';
+    const outArea = document.createElement('textarea'); outArea.className = 'pp-ai-output'; outArea.rows = 8;
+    outArea.placeholder = '{ "_kind": "web_perso_story", ... }';
+
+    const applyBtn = document.createElement('button'); applyBtn.className = 'pp-btn'; applyBtn.textContent = 'Apply config';
+    const rowB = document.createElement('div'); rowB.className = 'pp-ai-row';
+    rowB.appendChild(applyBtn);
+
+    box.appendChild(closeBtn);
+    box.appendChild(title);
+    box.appendChild(sub);
+    box.appendChild(intentLabel);
+    box.appendChild(intentArea);
+    box.appendChild(rowA);
+    box.appendChild(outLabel);
+    box.appendChild(outArea);
+    box.appendChild(rowB);
+    wrap.appendChild(backdrop);
+    wrap.appendChild(box);
+    document.body.appendChild(wrap);
+
+    function close() { wrap.remove(); }
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('click', close);
+
+    copyBtn.addEventListener('click', async () => {
+      const prompt = buildAiPrompt(intentArea.value);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        copyBtn.textContent = 'Copied ✓';
+        setTimeout(() => copyBtn.textContent = '📋 Copy prompt', 1500);
+      } catch (err) {
+        // Fallback: fill outArea so user can copy manually
+        outArea.value = prompt; outArea.focus(); outArea.select();
+        alert('Clipboard blocked — prompt placed in the response box. Copy from there.');
+      }
+    });
+
+    openBtn.addEventListener('click', () => {
+      window.open('https://chat.openai.com/', '_blank', 'noopener');
+    });
+
+    applyBtn.addEventListener('click', () => {
+      const raw = outArea.value.trim();
+      if (!raw) { alert('Paste the AI\'s JSON output first.'); return; }
+      let parsed;
+      try {
+        // Tolerate the model wrapping in code fences even though we asked not to
+        const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+        parsed = JSON.parse(cleaned);
+      } catch (err) { alert('Not valid JSON: ' + err.message); return; }
+      try {
+        const cfg = parsed && parsed._kind === 'web_perso_story' && parsed.config ? parsed.config : parsed;
+        applyImportedConfig(cfg);
+        close();
+      } catch (err) { alert('Import failed: ' + err.message); }
+    });
   }
 
   // -------------------- Story export / import --------------------
