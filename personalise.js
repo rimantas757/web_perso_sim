@@ -1,5 +1,5 @@
 /* ============================================================
- * Personalise.js — reusable client-side personalisation engine
+ * Personalise.js \u2014 reusable client-side personalisation engine
  * ============================================================
  * v2: generic engine + config mode
  *
@@ -28,7 +28,7 @@
   const UI_STORAGE_KEY = 'personalise::ui';
 
   // -------------------- Default config --------------------
-  // Generic — no client-specific rules. User builds up rules in Config mode.
+  // Generic \u2014 no client-specific rules. User builds up rules in Config mode.
   function defaultConfig() {
     return {
       client: 'Generic',
@@ -71,7 +71,7 @@
   function patternMatches(pattern, kind, url, path) {
     if (kind === 'exact') return path === pattern || url === pattern;
     if (kind === 'prefix') {
-      // Prefix ends in "*" — strip and check
+      // Prefix ends in "*" \u2014 strip and check
       const p = pattern.replace(/\*+$/, '');
       return path.startsWith(p) || url.startsWith(p);
     }
@@ -138,7 +138,7 @@
       }
       return true;
     },
-    // Legacy alias — old configs referenced swapBackground.
+    // Legacy alias \u2014 old configs referenced swapBackground.
     swapBackground(rule) { return actions.swapImage(rule); },
     popup(rule) {
       if (document.getElementById('personalise-popup')) return true;
@@ -147,7 +147,7 @@
       const backdrop = document.createElement('div'); backdrop.className = 'pp-popup__backdrop';
       const box = document.createElement('div'); box.className = 'pp-popup__box';
       const closeBtn = document.createElement('button'); closeBtn.className = 'pp-popup__close';
-      closeBtn.setAttribute('aria-label', 'Close'); closeBtn.textContent = '×';
+      closeBtn.setAttribute('aria-label', 'Close'); closeBtn.textContent = '\u00D7';
       const title = document.createElement('h3'); title.textContent = rule.action.title || 'A message for you';
       const body = document.createElement('p'); body.textContent = rule.action.body || '';
       box.appendChild(closeBtn); box.appendChild(title); box.appendChild(body);
@@ -164,7 +164,7 @@
       return true;
     },
     // Escape hatch: run an arbitrary JS snippet with access to a ctx helper bag.
-    // Only run configs you trust — same trust model as a bookmarklet.
+    // Only run configs you trust \u2014 same trust model as a bookmarklet.
     runScript(rule) {
       const code = rule.action.code;
       if (!code) { console.warn('[personalise] runScript missing code'); return false; }
@@ -225,7 +225,7 @@
     #pp-panel__toggle { background: transparent; border: 0; color: #fff; font-size: 16px; cursor: pointer; padding: 0 4px; }
     #pp-panel__body { padding: 12px 14px; max-height: 60vh; overflow-y: auto; }
 
-    /* Expanded header — flex layout for title / client / minus button. */
+    /* Expanded header \u2014 flex layout for title / client / minus button. */
     #pp-panel:not(.is-collapsed) .pp-expanded-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
     #pp-panel:not(.is-collapsed) .pp-badge-content { display: none; }
 
@@ -308,7 +308,7 @@
     #pp-panel .pp-thr-actions { display: flex; gap: 6px; margin-top: 6px; }
     #pp-panel .pp-thr-actions .pp-btn { flex: 1; }
 
-    /* Pick-element overlay — a fixed div on top of the current hovered element */
+    /* Pick-element overlay \u2014 a fixed div on top of the current hovered element */
     #pp-pick-overlay { position: fixed; pointer-events: none; z-index: 2147483645;
       border: 2px solid #ff6b3d; background: rgba(255,107,61,0.12); transition: all 60ms linear; }
     #pp-pick-hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 2147483646;
@@ -411,7 +411,7 @@
     if (pickState) return;
     const overlay = document.createElement('div'); overlay.id = 'pp-pick-overlay';
     const hint = document.createElement('div'); hint.id = 'pp-pick-hint';
-    hint.innerHTML = 'Click any element to capture its selector — press <kbd>Esc</kbd> to cancel';
+    hint.innerHTML = 'Click any element to capture its selector \u2014 press <kbd>Esc</kbd> to cancel';
     document.body.appendChild(overlay);
     document.body.appendChild(hint);
     document.body.classList.add('pp-picking');
@@ -449,7 +449,7 @@
   }
 
   // -------------------- Panel rendering --------------------
-  // Inline Salesforce cloud — schematic form made of overlapping white circles
+  // Inline Salesforce cloud \u2014 schematic form made of overlapping white circles
   // on the blue badge background. Independent of any external asset; works
   // behind any CSP.
   const SF_CLOUD_SVG =
@@ -546,9 +546,9 @@
 
     clear(panel);
 
-    // Header — same element for both expanded and collapsed; content swaps via CSS
+    // Header \u2014 same element for both expanded and collapsed; content swaps via CSS
     const header = el('div', { id: 'pp-panel__header' });
-    header.title = ui.collapsed ? 'Drag to move · click + to expand' : 'Drag to move';
+    header.title = ui.collapsed ? 'Drag to move \u00B7 click + to expand' : 'Drag to move';
 
     // Collapsed content: Salesforce cloud badge + expand (+) button
     const badge = el('div', { className: 'pp-badge-content' });
@@ -557,12 +557,12 @@
     const expandBtn = el('button', { className: 'pp-expand-btn', ariaLabel: 'Expand', text: '+' });
     header.appendChild(expandBtn);
 
-    // Expanded content: title + client + collapse (−) button
+    // Expanded content: title + client + collapse (\u2212) button
     const expandedHeader = el('div', { className: 'pp-expanded-header' });
     const headerLeft = el('div');
     headerLeft.appendChild(el('strong', { text: 'Personalise' }));
     headerLeft.appendChild(el('div', { id: 'pp-panel__client', text: config.client }));
-    const toggleBtn = el('button', { id: 'pp-panel__toggle', ariaLabel: 'Minimise', text: '−' });
+    const toggleBtn = el('button', { id: 'pp-panel__toggle', ariaLabel: 'Minimise', text: '\u2212' });
     expandedHeader.appendChild(headerLeft);
     expandedHeader.appendChild(toggleBtn);
     header.appendChild(expandedHeader);
@@ -586,8 +586,8 @@
     // Apply saved position after body is in DOM so offsetWidth/Height are correct
     applyPositionToPanel(panel);
 
-    // Wiring — drag first so it can suppress the trailing click on move.
-    // Header itself no longer toggles collapse; only the − / + buttons do,
+    // Wiring \u2014 drag first so it can suppress the trailing click on move.
+    // Header itself no longer toggles collapse; only the \u2212 / + buttons do,
     // so users can grab-and-drag the header without accidentally minimising.
     attachDrag(panel, header);
     toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.collapsed = true; saveUi(); renderPanel(); });
@@ -650,7 +650,7 @@
     const header = el('div', { className: 'pp-thr-header' });
     const descInput = el('input', { type: 'text', value: rule.description || '' });
     descInput.addEventListener('change', () => { rule.description = descInput.value; saveConfig(); });
-    const delBtn = el('button', { className: 'pp-icon', text: '×', ariaLabel: 'Delete rule' });
+    const delBtn = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete rule' });
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       config.thresholdRules = config.thresholdRules.filter(r => r.id !== rule.id);
@@ -675,7 +675,7 @@
     thrInput.min = '1';
     thrInput.addEventListener('change', () => { rule.threshold = Number(thrInput.value) || 1; saveConfig(); });
     topicField.appendChild(topicSel);
-    topicField.appendChild(el('span', { text: '≥' }));
+    topicField.appendChild(el('span', { text: '\u2265' }));
     topicField.appendChild(thrInput);
     wrap.appendChild(topicField);
 
@@ -737,7 +737,7 @@
 
       const imgField = el('div', { className: 'pp-thr-field' });
       imgField.appendChild(el('label', { text: 'Image URL' }));
-      const imgInput = el('input', { type: 'text', value: rule.action.image || '', placeholder: 'https://…' });
+      const imgInput = el('input', { type: 'text', value: rule.action.image || '', placeholder: 'https://\u2026' });
       imgInput.addEventListener('change', () => { rule.action.image = imgInput.value; saveConfig(); });
       imgField.appendChild(imgInput);
       wrap.appendChild(imgField);
@@ -769,7 +769,7 @@
 
       const ctaHrefField = el('div', { className: 'pp-thr-field' });
       ctaHrefField.appendChild(el('label', { text: 'CTA link' }));
-      const ctaHrefInput = el('input', { type: 'text', value: (rule.action.cta || {}).href || '', placeholder: 'https://…' });
+      const ctaHrefInput = el('input', { type: 'text', value: (rule.action.cta || {}).href || '', placeholder: 'https://\u2026' });
       ctaHrefInput.addEventListener('change', () => {
         rule.action.cta = rule.action.cta || {}; rule.action.cta.href = ctaHrefInput.value;
         if (!ctaHrefInput.value && !(rule.action.cta.label)) rule.action.cta = null;
@@ -779,7 +779,7 @@
       wrap.appendChild(ctaHrefField);
     } else if (rule.action.type === 'runScript') {
       const codeField = el('div');
-      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(…).' });
+      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026).' });
       const codeArea = el('textarea', { className: 'pp-code' });
       codeArea.value = rule.action.code || '';
       codeArea.spellcheck = false;
@@ -799,7 +799,7 @@
       const fn = actions[rule.action.type];
       if (!fn) { alert('Unknown action type: ' + rule.action.type); return; }
       const ok = fn(rule);
-      if (!ok) alert('Rule ran but returned no effect — check selector / URL / console.');
+      if (!ok) alert('Rule ran but returned no effect \u2014 check selector / URL / console.');
     });
     const unfireBtn = el('button', { className: 'pp-btn pp-btn--sm', text: fired ? 'Un-fire' : 'Not fired' });
     if (!fired) unfireBtn.disabled = true, unfireBtn.style.opacity = 0.5;
@@ -817,9 +817,9 @@
 
   // -------------------- Config view --------------------
   function renderConfig(body) {
-    // AI author — first thing in Config so it's discoverable
+    // AI author \u2014 first thing in Config so it's discoverable
     body.appendChild(el('h4', { text: 'AI author' }));
-    const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '✨ Generate config with AI' });
+    const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Generate config with AI' });
     aiBtn.addEventListener('click', (e) => { e.stopPropagation(); openAiPromptModal(); });
     body.appendChild(aiBtn);
     body.appendChild(el('div', { className: 'pp-hint', text: 'Copy a prompt for ChatGPT/Claude, paste back JSON to import.' }));
@@ -827,13 +827,13 @@
     // Topics
     body.appendChild(el('h4', { text: 'Topics' }));
     const topicList = el('ul');
-    if (!config.topics.length) topicList.appendChild(el('li', { className: 'pp-empty', text: 'No topics — add one below' }));
+    if (!config.topics.length) topicList.appendChild(el('li', { className: 'pp-empty', text: 'No topics \u2014 add one below' }));
     else {
       for (const t of config.topics) {
         const li = el('li');
         const input = el('input', { className: 'pp-topic-edit', type: 'text', value: t.label });
         input.addEventListener('change', () => { t.label = input.value.trim() || t.id; saveConfig(); renderPanel(); });
-        const del = el('button', { className: 'pp-icon', text: '×', ariaLabel: 'Delete topic', title: 'Delete topic' });
+        const del = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete topic', title: 'Delete topic' });
         del.addEventListener('click', (e) => {
           e.stopPropagation();
           config.topics = config.topics.filter(x => x.id !== t.id);
@@ -850,7 +850,7 @@
     body.appendChild(topicList);
 
     const addTopicRow = el('div', { className: 'pp-row' });
-    const newTopicInput = el('input', { type: 'text', placeholder: 'New topic name…' });
+    const newTopicInput = el('input', { type: 'text', placeholder: 'New topic name\u2026' });
     const addTopicBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Add' });
     addTopicRow.appendChild(newTopicInput);
     addTopicRow.appendChild(addTopicBtn);
@@ -940,14 +940,14 @@
         wInput.addEventListener('change', () => { r.weight = Number(wInput.value) || 1; saveConfig(); });
 
         meta.appendChild(kindSel);
-        meta.appendChild(document.createTextNode(' → '));
+        meta.appendChild(document.createTextNode(' \u2192 '));
         meta.appendChild(topicSel);
-        meta.appendChild(document.createTextNode(' × '));
+        meta.appendChild(document.createTextNode(' \u00D7 '));
         meta.appendChild(wInput);
         rbody.appendChild(patInput);
         rbody.appendChild(meta);
         li.appendChild(rbody);
-        const del = el('button', { className: 'pp-icon', text: '×', ariaLabel: 'Delete rule', title: 'Delete rule' });
+        const del = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete rule', title: 'Delete rule' });
         del.addEventListener('click', (e) => {
           e.stopPropagation();
           config.urlRules = config.urlRules.filter(x => x.id !== r.id);
@@ -959,7 +959,7 @@
     }
     body.appendChild(ruleList);
 
-    // Threshold rules — the "what happens when" configuration
+    // Threshold rules \u2014 the "what happens when" configuration
     body.appendChild(el('h4', { text: 'Threshold rules (' + config.thresholdRules.length + ')' }));
     const thrList = el('div');
     if (!config.thresholdRules.length) thrList.appendChild(el('div', { className: 'pp-empty', text: 'No threshold rules yet' }));
@@ -1004,11 +1004,11 @@
       saveConfig(); saveState(); renderPanel();
     });
 
-    // Import / Export — real file operations
+    // Import / Export \u2014 real file operations
     body.appendChild(el('h4', { text: 'Save / load story' }));
     const ioRow = el('div', { className: 'pp-actions-row' });
-    const exportBtn = el('button', { className: 'pp-btn', text: '⬇ Export' });
-    const importBtn = el('button', { className: 'pp-btn', text: '⬆ Import' });
+    const exportBtn = el('button', { className: 'pp-btn', text: '\u2B07 Export' });
+    const importBtn = el('button', { className: 'pp-btn', text: '\u2B06 Import' });
     ioRow.appendChild(exportBtn);
     ioRow.appendChild(importBtn);
     body.appendChild(ioRow);
@@ -1017,7 +1017,7 @@
     exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportStoryFile(); });
     importBtn.addEventListener('click', (e) => { e.stopPropagation(); openImportPicker(); });
 
-    // Advanced fallback — kept behind a details toggle for copy-paste flows
+    // Advanced fallback \u2014 kept behind a details toggle for copy-paste flows
     const details = document.createElement('details');
     const summary = document.createElement('summary');
     summary.textContent = 'Advanced: copy/paste JSON';
@@ -1033,7 +1033,7 @@
     details.appendChild(paRow);
     copyBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      try { await navigator.clipboard.writeText(jsonArea.value); copyBtn.textContent = 'Copied ✓'; setTimeout(() => copyBtn.textContent = 'Copy', 1500); }
+      try { await navigator.clipboard.writeText(jsonArea.value); copyBtn.textContent = 'Copied \u2713'; setTimeout(() => copyBtn.textContent = 'Copy', 1500); }
       catch (err) { jsonArea.select(); }
     });
     applyBtn.addEventListener('click', (e) => {
@@ -1069,15 +1069,15 @@
     const intent = userIntent && userIntent.trim()
       ? userIntent.trim()
       : '<< Describe what you want the personalisation to accomplish. Examples:\n'
-        + '   - "Boost Sri Lanka interest — swap homepage hero and CTA copy for anyone who has viewed 3+ Sri Lanka pages."\n'
+        + '   - "Boost Sri Lanka interest \u2014 swap homepage hero and CTA copy for anyone who has viewed 3+ Sri Lanka pages."\n'
         + '   - "Highlight family holidays for repeat visitors who\'ve clicked family destinations."\n'
-        + '   - "Nudge premium travel — show a popup with a concierge CTA after 5 luxury-tier page views." >>';
+        + '   - "Nudge premium travel \u2014 show a popup with a concierge CTA after 5 luxury-tier page views." >>';
 
     return `You are helping author a JSON config for a client-side website
 personalisation engine called Personalise (web_perso_story format).
 
 TARGET SITE
-Base URL: ${origin || '(unknown — user is running locally)'}
+Base URL: ${origin || '(unknown \u2014 user is running locally)'}
 Hostname: ${host}
 Example URLs to look at first:
 ${urlList}
@@ -1087,21 +1087,21 @@ ${intent}
 
 YOUR TASK
 1. Crawl the target site starting from the example URLs above. Look at the
-   real HTML — identify hero blocks, CTAs, navigation, section headings,
+   real HTML \u2014 identify hero blocks, CTAs, navigation, section headings,
    and any content you'd want to personalise for the intent above.
-2. Propose 2–5 topics that capture the segments the intent implies.
-3. Propose urlRules that map URL patterns → topic weights so browsing the
+2. Propose 2\u20135 topics that capture the segments the intent implies.
+3. Propose urlRules that map URL patterns \u2192 topic weights so browsing the
    site accumulates topic scores naturally. Prefer prefix or regex rules
    that cover a section rather than an exact path per page.
 4. Propose thresholdRules that swap images, show popups, or run scripts
    when a topic score meets its threshold. Only add rules that make sense
-   for the intent — don't invent noise.
+   for the intent \u2014 don't invent noise.
 5. For each thresholdRule, include an appliesOn pattern so it doesn't fire
    on unrelated pages. Leave appliesOn empty only for site-wide effects.
 6. Return ONE JSON object, no prose around it, matching the exact schema
    below. Do not wrap it in markdown code fences.
 
-SCHEMA (must match exactly — engine imports this verbatim)
+SCHEMA (must match exactly \u2014 engine imports this verbatim)
 {
   "_kind": "web_perso_story",
   "_version": 1,
@@ -1148,7 +1148,7 @@ Show popup:
   "cta": { "label": "<button text>", "href": "<url>" }   // optional
 }
 
-Run script (arbitrary DOM tweaks — use ONLY when swapImage/popup can't cover it):
+Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/popup can't cover it):
 { "type": "runScript",
   "code": "<JS body. \`rule\` and \`ctx\` are in scope. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> read-only scores/firedRules\n  ctx.log(...) -> console.info>"
 }
@@ -1156,11 +1156,11 @@ Run script (arbitrary DOM tweaks — use ONLY when swapImage/popup can't cover i
 AUTHORING RULES
 - Topic IDs must be kebab-case (sri-lanka-interest, family-focused, etc.).
 - Weights: 1 is the default per-page contribution. Use higher weights
-  (2–3) for hub / landing pages and 4+ only for very high-signal pages.
+  (2\u20133) for hub / landing pages and 4+ only for very high-signal pages.
 - Prefer semantic CSS selectors (BEM-style: .brand-hero__title, .cta__button)
   over deep :nth-of-type() chains. If the site uses utility-class frameworks
   (Tailwind etc.), prefer data-* attributes or aria-label selectors.
-- Only pick images you can verify are hotlink-safe — Wikimedia Commons,
+- Only pick images you can verify are hotlink-safe \u2014 Wikimedia Commons,
   the site's own CDN, or open-license photo hosts. Never invent URLs.
 - If runScript is unavoidable, keep the snippet short (<20 lines) and
   never touch localStorage / cookies / fetch / navigate.
@@ -1182,7 +1182,7 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
     const box = document.createElement('div'); box.className = 'pp-ai-box';
 
     const closeBtn = document.createElement('button');
-    closeBtn.className = 'pp-ai-close'; closeBtn.textContent = '×'; closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.className = 'pp-ai-close'; closeBtn.textContent = '\u00D7'; closeBtn.setAttribute('aria-label', 'Close');
 
     const title = document.createElement('h3'); title.textContent = 'AI-author a config';
     const sub = document.createElement('div'); sub.className = 'pp-ai-sub';
@@ -1191,10 +1191,10 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
     const intentLabel = document.createElement('label'); intentLabel.textContent = 'What should the personalisation do?';
     intentLabel.className = 'pp-ai-label';
     const intentArea = document.createElement('textarea'); intentArea.className = 'pp-ai-intent'; intentArea.rows = 3;
-    intentArea.placeholder = 'e.g. Boost Sri Lanka interest — swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
+    intentArea.placeholder = 'e.g. Boost Sri Lanka interest \u2014 swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
 
-    const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '📋 Copy prompt';
-    const openBtn = document.createElement('button'); openBtn.className = 'pp-btn'; openBtn.textContent = 'Open ChatGPT →';
+    const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '\uD83D\uDCCB Copy prompt';
+    const openBtn = document.createElement('button'); openBtn.className = 'pp-btn'; openBtn.textContent = 'Open ChatGPT \u2192';
     openBtn.title = 'Opens chat.openai.com in a new tab';
 
     const rowA = document.createElement('div'); rowA.className = 'pp-ai-row';
@@ -1230,12 +1230,12 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
       const prompt = buildAiPrompt(intentArea.value);
       try {
         await navigator.clipboard.writeText(prompt);
-        copyBtn.textContent = 'Copied ✓';
-        setTimeout(() => copyBtn.textContent = '📋 Copy prompt', 1500);
+        copyBtn.textContent = 'Copied \u2713';
+        setTimeout(() => copyBtn.textContent = '\uD83D\uDCCB Copy prompt', 1500);
       } catch (err) {
         // Fallback: fill outArea so user can copy manually
         outArea.value = prompt; outArea.focus(); outArea.select();
-        alert('Clipboard blocked — prompt placed in the response box. Copy from there.');
+        alert('Clipboard blocked \u2014 prompt placed in the response box. Copy from there.');
       }
     });
 
@@ -1324,7 +1324,7 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
     history.replaceState = function () { const r = origReplace.apply(this, arguments); emit(); return r; };
     window.addEventListener('popstate', emit);
     window.addEventListener('personalise:navigate', () => {
-      // Pre-apply CSS overrides immediately — happens synchronously in the
+      // Pre-apply CSS overrides immediately \u2014 happens synchronously in the
       // route change tick, before the new view has painted. The MutationObserver
       // takes care of catching newly-inserted <img> elements as the SPA renders.
       preApplyPaintedRules();
@@ -1356,7 +1356,7 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
     if (!rule.action.selector || !rule.action.image) return false;
     if (!ruleApplies(rule)) return false;
     const score = state.scores[rule.topicId] || 0;
-    // Pre-apply if score is already ≥ threshold OR the rule has already fired
+    // Pre-apply if score is already \u2265 threshold OR the rule has already fired
     // (fired-set rehydrates across reloads and SPA nav).
     return score >= rule.threshold || state.firedRules.includes(rule.id);
   }
@@ -1394,7 +1394,7 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
       styleEl.remove();
     }
 
-    // 3. Preload links (idempotent — dedupe by href)
+    // 3. Preload links (idempotent \u2014 dedupe by href)
     const existingPreloads = new Set(
       Array.from(document.querySelectorAll('link[rel="preload"][data-pp]')).map(l => l.href)
     );
@@ -1433,12 +1433,12 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
                     if (el.src !== img) el.src = img;
                     if (el.hasAttribute('srcset')) el.removeAttribute('srcset');
                   } else {
-                    // background-image element — CSS already handles it, but set
+                    // background-image element \u2014 CSS already handles it, but set
                     // inline as a belt-and-braces guard.
                     el.style.backgroundImage = `url('${img}')`;
                   }
                 }
-              } catch (e) { /* invalid selector — ignore */ }
+              } catch (e) { /* invalid selector \u2014 ignore */ }
             }
           }
         }
@@ -1469,7 +1469,7 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
     preApplyPaintedRules();
     // 3. Now fire any non-visual actions (popup, runScript) and mark rules
     //    fired that weren't fired before. evaluateRules will also re-swap
-    //    background/img — that's fine, it's the same value.
+    //    background/img \u2014 that's fine, it's the same value.
     evaluateRules();
     // 4. Re-run pre-apply so newly-fired rules get their CSS/preload/observer
     //    in place for any SPA route changes coming next.
@@ -1479,7 +1479,7 @@ explanation, no code fences. The output must parse cleanly with JSON.parse.`;
     console.info('[personalise] engine ready', { client: config.client, mode: ui.mode, state });
   }
 
-  // Run pre-apply as EARLY as possible — even before DOMContentLoaded.
+  // Run pre-apply as EARLY as possible \u2014 even before DOMContentLoaded.
   // This is what stops the flicker for background-image swaps: the CSS lands
   // before the browser has painted the target element.
   preApplyPaintedRules();
