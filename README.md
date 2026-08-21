@@ -4,20 +4,15 @@ A client-side website personalization engine that runs from your bookmarks bar. 
 
 ## What's here
 
-- **`personalise.js`** — the engine. Vanilla JS, no build step. Injects itself into any page.
-- **`personalise.user.js`** — Tampermonkey userscript wrapper of the engine. Auto-injects on every page load without user action. **Best for demos.**
+- **`personalise.js`** — the engine. Vanilla JS, no build step.
+- **`personalise.user.js`** — Tampermonkey userscript wrapper of the engine. Auto-injects on every page load, persists across reloads and navigations.
 - **`build-userscript.js`** — Node script that regenerates `personalise.user.js` from `personalise.js` with a fresh version stamp. Run after every engine edit.
-- **`install.html` + `install.js`** — landing page. Offers the userscript (recommended), a loader bookmarklet, an inline bookmarklet, and a DevTools-snippet fallback.
+- **`install.html` + `install.js`** — landing page. Points users at the userscript and shows current version/size.
 - **`index.html`, `sri-lanka.html`, `styles.css`, `home.css`, `home.js`** — a local Audley Travel lookalike used to demo the engine. Local only, not published to GitHub.
 
-## Delivery options, ranked
+## Delivery model
 
-| Method | Persists across navigations? | Persists across reloads? | Requires an extension? | Best for |
-|---|---|---|---|---|
-| Tampermonkey userscript | ✅ | ✅ | Yes (Tampermonkey) | Rehearsals + live demos |
-| Loader bookmarklet | ❌ | ❌ | No | One-off tests on any site |
-| Inline bookmarklet | ❌ | ❌ | No | Strict-CSP sites |
-| DevTools snippet | ❌ | ❌ | No | When bookmarklets are stripped |
+Bookmarklets exist but they don't persist across page loads — the moment you reload or navigate, the injected script is gone. That's a dealbreaker for realistic demos where the person browsing the site is picking a topic across several pages. Tampermonkey is the answer: install once, runs on every page.
 
 ## How the engine works
 
