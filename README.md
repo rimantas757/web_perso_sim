@@ -5,8 +5,19 @@ A client-side website personalization engine that runs from your bookmarks bar. 
 ## What's here
 
 - **`personalise.js`** — the engine. Vanilla JS, no build step. Injects itself into any page.
-- **`install.html` + `install.js`** — landing page that generates two bookmarklet variants (loader + inline) and offers a copy-to-clipboard DevTools fallback.
-- **`index.html`, `sri-lanka.html`, `styles.css`, `home.css`, `home.js`** — a local Audley Travel lookalike used to demo the engine.
+- **`personalise.user.js`** — Tampermonkey userscript wrapper of the engine. Auto-injects on every page load without user action. **Best for demos.**
+- **`build-userscript.js`** — Node script that regenerates `personalise.user.js` from `personalise.js` with a fresh version stamp. Run after every engine edit.
+- **`install.html` + `install.js`** — landing page. Offers the userscript (recommended), a loader bookmarklet, an inline bookmarklet, and a DevTools-snippet fallback.
+- **`index.html`, `sri-lanka.html`, `styles.css`, `home.css`, `home.js`** — a local Audley Travel lookalike used to demo the engine. Local only, not published to GitHub.
+
+## Delivery options, ranked
+
+| Method | Persists across navigations? | Persists across reloads? | Requires an extension? | Best for |
+|---|---|---|---|---|
+| Tampermonkey userscript | ✅ | ✅ | Yes (Tampermonkey) | Rehearsals + live demos |
+| Loader bookmarklet | ❌ | ❌ | No | One-off tests on any site |
+| Inline bookmarklet | ❌ | ❌ | No | Strict-CSP sites |
+| DevTools snippet | ❌ | ❌ | No | When bookmarklets are stripped |
 
 ## How the engine works
 
@@ -52,8 +63,18 @@ Update the footer link in [install.html](install.html) (`id="repo-link"`) once y
 
 ## Iterating
 
-- Edit `personalise.js` locally, push. The **loader bookmarklet** fetches the latest version on every click (cache-busted). Users don't need to re-drag.
-- The **inline bookmarklet** carries the engine in the URL, so it's frozen at the moment the user dragged it. To pick up new features they visit `/install.html` again and re-drag.
+After editing `personalise.js`:
+
+```bash
+node build-userscript.js  # regenerates personalise.user.js with a fresh version stamp
+git add personalise.js personalise.user.js
+git commit -m "Update engine"
+git push
+```
+
+- **Userscript users** get updates automatically — Tampermonkey checks `@updateURL` daily, or the user can hit "Check for updates" in the Tampermonkey dashboard for an immediate refresh.
+- **Loader bookmarklet users** fetch the latest version on every click (cache-busted). No re-drag needed.
+- **Inline bookmarklet users** carry a frozen copy in the URL. To pick up new features they re-visit `/install.html` and re-drag.
 
 ## Storage layout
 

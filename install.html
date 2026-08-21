@@ -69,7 +69,29 @@
       Tag any page while you browse, and configure rules that swap heroes, show popups, or run scripts when a topic score crosses a threshold.</p>
   </header>
 
-  <h2><span class="step">1</span>Grab the bookmarklet</h2>
+  <h2><span class="step">1</span>Best experience — install as a Tampermonkey userscript</h2>
+  <div class="card" style="border-color: var(--accent);">
+    <p><b>Recommended</b> if you already have (or can install) the Tampermonkey extension. The engine auto-loads on every page you visit — no clicking needed. Survives reloads. Auto-updates when we ship changes.</p>
+    <div class="actions-row">
+      <a href="./personalise.user.js" class="bm" id="bm-userscript" title="Click to install with Tampermonkey">
+        ⚡ Install userscript
+      </a>
+      <span class="stats">
+        <span id="userscript-status">Ready</span>
+      </span>
+    </div>
+    <p class="hint">
+      Don't have Tampermonkey?
+      <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Get it here</a> (Chrome / Edge / Firefox / Safari).
+      After install, clicking the button above opens Tampermonkey's install dialog. Confirm and you're done.
+    </p>
+    <p class="hint">
+      The default match pattern is <code>*://*/*</code> (every site). To scope it to one client's site,
+      edit the userscript after install and change <code>@match</code> to e.g. <code>*://*.audleytravel.com/*</code>.
+    </p>
+  </div>
+
+  <h2><span class="step">2</span>No extensions allowed? Use the bookmarklet</h2>
   <div class="card">
     <p><b>Drag this button to your bookmarks bar:</b></p>
     <div class="actions-row">
@@ -80,10 +102,11 @@
         <span id="loader-status">Preparing…</span>
       </span>
     </div>
-    <p class="hint">Then click the bookmark on any website. The Personalise panel appears bottom-right.</p>
+    <p class="hint">Then click the bookmark on any website. The Personalise panel appears bottom-right.
+      <b>Caveat:</b> you must click the bookmark on every page load — the engine doesn't persist across navigations.</p>
   </div>
 
-  <h2><span class="step">2</span>If step 1 doesn't work — use the inline version</h2>
+  <h2><span class="step">3</span>If the bookmarklet is blocked — use the inline version</h2>
   <div class="card card--warn">
     <p>Some sites use a strict Content Security Policy (CSP) that blocks loading external scripts,
       including the loader bookmarklet. This alternative bundles the entire engine into a single
@@ -100,7 +123,7 @@
       but bulletproof.</p>
   </div>
 
-  <h2><span class="step">3</span>Absolute last resort — DevTools snippet</h2>
+  <h2><span class="step">4</span>Absolute last resort — DevTools snippet</h2>
   <div class="card">
     <p>If both bookmarklets fail (very rare — some intranet sites strip <code>javascript:</code> URLs),
       paste the engine into browser DevTools:</p>
