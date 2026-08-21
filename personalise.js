@@ -225,19 +225,30 @@
     #pp-panel__toggle { background: transparent; border: 0; color: #fff; font-size: 16px; cursor: pointer; padding: 0 4px; }
     #pp-panel__body { padding: 12px 14px; max-height: 60vh; overflow-y: auto; }
 
-    /* Collapsed = round Salesforce-blue badge with cloud SVG. Retains draggability. */
-    #pp-panel.is-collapsed { width: 56px; height: 56px; border-radius: 50%; overflow: visible;
+    /* Expanded header — flex layout for title / client / minus button. */
+    #pp-panel:not(.is-collapsed) .pp-expanded-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+    #pp-panel:not(.is-collapsed) .pp-badge-content { display: none; }
+
+    /* Collapsed = round Salesforce-blue badge. Header becomes the badge. */
+    #pp-panel.is-collapsed { width: 64px; height: 64px; border-radius: 50%; overflow: visible;
       background: transparent; border: 0; box-shadow: none; }
     #pp-panel.is-collapsed #pp-panel__body { display: none; }
     #pp-panel.is-collapsed #pp-panel__header { padding: 0; background: #00A1E0;
-      width: 56px; height: 56px; border-radius: 50%; justify-content: center; align-items: center;
-      box-shadow: 0 6px 24px rgba(0,161,224,0.5); border: 2px solid #fff; }
+      width: 64px; height: 64px; border-radius: 50%; justify-content: center; align-items: center;
+      box-shadow: 0 6px 24px rgba(0,161,224,0.5); border: 2px solid #fff; position: relative; }
     #pp-panel.is-collapsed #pp-panel__header:hover { background: #0091cf; }
-    #pp-panel.is-collapsed .pp-badge-content { display: block; }
     #pp-panel.is-collapsed .pp-expanded-header { display: none; }
-    #pp-panel:not(.is-collapsed) .pp-badge-content { display: none; }
-    #pp-panel .pp-badge-content { width: 40px; height: 40px; }
-    #pp-panel .pp-badge-content svg { width: 100%; height: 100%; }
+    #pp-panel.is-collapsed .pp-badge-content { display: block; width: 44px; height: 44px; }
+    #pp-panel.is-collapsed .pp-badge-content svg { width: 100%; height: 100%; display: block; }
+
+    /* Chunky + in the top-right of the collapsed badge to expand */
+    #pp-panel.is-collapsed .pp-expand-btn { position: absolute; top: -6px; right: -6px;
+      width: 22px; height: 22px; border-radius: 50%; background: #fff; color: #00A1E0;
+      border: 2px solid #00A1E0; font: 700 16px/16px -apple-system, sans-serif; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; padding: 0;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+    #pp-panel.is-collapsed .pp-expand-btn:hover { background: #00A1E0; color: #fff; }
+    #pp-panel:not(.is-collapsed) .pp-expand-btn { display: none; }
 
     #pp-panel .pp-mode-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid #eee; }
     #pp-panel .pp-mode-tab { flex: 1; padding: 8px; text-align: center; cursor: pointer; font-size: 11px;
@@ -415,9 +426,17 @@
   }
 
   // -------------------- Panel rendering --------------------
-  // Inline Salesforce cloud SVG — no network fetch, works even offline / behind CSP.
-  const SF_CLOUD_SVG = '<svg viewBox="0 0 273 191" xmlns="http://www.w3.org/2000/svg" aria-label="Salesforce">'
-    + '<path fill="#ffffff" d="M113.6 41.7c8.8-9.2 21-14.9 34.5-14.9 18 0 33.7 10 42.1 24.9 7.3-3.3 15.3-5.1 23.8-5.1 32.6 0 59.1 26.7 59.1 59.7 0 33-26.4 59.7-59.1 59.7-4 0-7.9-.4-11.7-1.2-7.4 13.2-21.5 22.1-37.7 22.1-6.8 0-13.2-1.6-18.9-4.4-7.5 17.6-24.9 30-45.2 30-21.2 0-39.2-13.4-46.1-32.1-3 .6-6.1 1-9.4 1C22.3 181.5 0 158.9 0 131c0-18.7 10.1-35 25-43.7-3.1-7.1-4.8-14.9-4.8-23.2C20.2 31.5 46.6 5.1 79 5.1c19 0 36 9 46.9 23 3.6-3.7 7.9-6.7 12.7-8.9-13.7-4.8-25-14-25-14z"/>'
+  // Inline Salesforce cloud — schematic form made of overlapping white circles
+  // on the blue badge background. Independent of any external asset; works
+  // behind any CSP.
+  const SF_CLOUD_SVG =
+    '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-label="Salesforce">'
+    + '<g fill="#ffffff">'
+    +   '<circle cx="34" cy="58" r="22"/>'
+    +   '<circle cx="55" cy="45" r="26"/>'
+    +   '<circle cx="72" cy="60" r="20"/>'
+    +   '<ellipse cx="52" cy="72" rx="30" ry="12"/>'
+    + '</g>'
     + '</svg>';
 
   function applyPositionToPanel(panel) {
@@ -506,16 +525,17 @@
 
     // Header — same element for both expanded and collapsed; content swaps via CSS
     const header = el('div', { id: 'pp-panel__header' });
-    header.title = 'Drag to move · click to ' + (ui.collapsed ? 'expand' : 'collapse');
+    header.title = ui.collapsed ? 'Drag to move · click + to expand' : 'Drag to move';
 
-    // Collapsed content: Salesforce cloud badge
+    // Collapsed content: Salesforce cloud badge + expand (+) button
     const badge = el('div', { className: 'pp-badge-content' });
     badge.innerHTML = SF_CLOUD_SVG;
     header.appendChild(badge);
+    const expandBtn = el('button', { className: 'pp-expand-btn', ariaLabel: 'Expand', text: '+' });
+    header.appendChild(expandBtn);
 
-    // Expanded content: title + client + collapse toggle
+    // Expanded content: title + client + collapse (−) button
     const expandedHeader = el('div', { className: 'pp-expanded-header' });
-    expandedHeader.style.cssText = 'display: flex; align-items: center; justify-content: space-between; width: 100%;';
     const headerLeft = el('div');
     headerLeft.appendChild(el('strong', { text: 'Personalise' }));
     headerLeft.appendChild(el('div', { id: 'pp-panel__client', text: config.client }));
@@ -543,16 +563,12 @@
     // Apply saved position after body is in DOM so offsetWidth/Height are correct
     applyPositionToPanel(panel);
 
-    // Wiring — drag first so it can suppress the trailing click on move
+    // Wiring — drag first so it can suppress the trailing click on move.
+    // Header itself no longer toggles collapse; only the − / + buttons do,
+    // so users can grab-and-drag the header without accidentally minimising.
     attachDrag(panel, header);
-    header.addEventListener('click', (e) => {
-      // Ignore clicks on inner controls; they handle their own events
-      if (e.target.closest && e.target.closest('button.pp-mode-tab, button.pp-btn, button.pp-icon, input, select, textarea, a')) return;
-      ui.collapsed = !ui.collapsed;
-      saveUi();
-      renderPanel();
-    });
     toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.collapsed = true; saveUi(); renderPanel(); });
+    expandBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.collapsed = false; saveUi(); renderPanel(); });
     runtimeTab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = 'runtime'; saveUi(); renderPanel(); });
     configTab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = 'config'; saveUi(); renderPanel(); });
   }
