@@ -1054,7 +1054,13 @@
     chevron.addEventListener('click', (e) => {
       e.stopPropagation();
       rule._uiCollapsed = !rule._uiCollapsed;
-      saveConfig(); renderPanel();
+      saveConfig();
+      // In-place toggle so scroll position is preserved (a full renderPanel
+      // rebuilds the DOM and resets #pp-panel__body.scrollTop).
+      const now = !!rule._uiCollapsed;
+      outerWrap.classList.toggle('is-collapsed', now);
+      chevron.textContent = now ? '\u25B8' : '\u25BE';
+      chevron.setAttribute('aria-label', now ? 'Expand rule' : 'Collapse rule');
     });
     // Multi-line auto-expanding description (max 3 lines).
     const descInput = document.createElement('textarea');
