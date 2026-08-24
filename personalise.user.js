@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.08.21.1401
+// @version      2026.08.24.1555
 // @description  Client-side personalisation engine — tag pages, score topics, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -47,6 +47,7 @@
   function defaultConfig() {
     return {
       client: 'Generic',
+      avatarUrl: '',
       topics: [
         { id: 'topic-1', label: 'Topic 1' },
         { id: 'topic-2', label: 'Topic 2' },
@@ -59,6 +60,48 @@
         // { id, description, topicId, threshold, appliesOn: [{ pattern, kind }], action: { type, ... } }
       ]
     };
+  }
+
+  // Curated persona avatar library. URL is what shows inside the badge.
+  const PERSONA_LIBRARY = [
+    { name: 'Priya',   url: 'https://res.cloudinary.com/dt9axinn5/image/upload/v1774959110/Pria_profile_icon_y3hm4k.png' },
+    { name: 'Maya',    url: 'https://res.cloudinary.com/dt9axinn5/image/upload/v1774959111/Maya_profiel_icon_vsvtjg.png' },
+    { name: 'Nina',    url: 'https://res.cloudinary.com/dt9axinn5/image/upload/v1774959110/Nina_profile_icon_jm6efs.png' },
+    { name: 'Amanda',  url: 'https://res.cloudinary.com/dt9axinn5/image/upload/v1775038004/Whatsapp_profile_Amanda_professional_ccxxdj.png' },
+    { name: 'Tim',     url: 'https://res.cloudinary.com/dt9axinn5/image/upload/v1775038004/Whatsapp_profile_Tim_professional_y1rfof.png' },
+    { name: 'Andrew',  url: 'https://res.cloudinary.com/dt9axinn5/image/upload/v1775038003/Whatsapp_profile_Andrew_j456oh.png' }
+  ];
+
+  function togglePersonaLibrary(anchor, targetInput) {
+    // Toggle: if a popover is already up next to this anchor, close it.
+    const existing = document.querySelector('.pp-persona-popover');
+    if (existing) { existing.remove(); return; }
+    const pop = document.createElement('div');
+    pop.className = 'pp-persona-popover';
+    for (const p of PERSONA_LIBRARY) {
+      const choice = document.createElement('button');
+      choice.className = 'pp-persona-choice';
+      choice.type = 'button';
+      const img = document.createElement('img'); img.src = p.url; img.alt = p.name;
+      const name = document.createElement('span'); name.textContent = p.name;
+      choice.appendChild(img); choice.appendChild(name);
+      choice.addEventListener('click', (e) => {
+        e.stopPropagation();
+        targetInput.value = p.url;
+        config.avatarUrl = p.url;
+        saveConfig();
+        pop.remove();
+        renderPanel();
+      });
+      pop.appendChild(choice);
+    }
+    // Attach to the row, not to the button, so it can span wider
+    anchor.parentElement.appendChild(pop);
+    // Dismiss on outside click
+    setTimeout(() => {
+      const off = (e) => { if (!pop.contains(e.target) && e.target !== anchor) { pop.remove(); document.removeEventListener('mousedown', off, true); } };
+      document.addEventListener('mousedown', off, true);
+    }, 0);
   }
 
   // -------------------- Storage helpers --------------------
@@ -232,13 +275,35 @@
       /* Default position (overridden by JS once ui.pos is set) */
       bottom: 16px; right: 16px; }
     #pp-panel.is-positioned { bottom: auto; right: auto; }
+    #pp-panel.is-sized { /* width + height inline by JS */ }
     #pp-panel__header { display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px; background: #4d726d; color: #fff; cursor: grab; user-select: none; touch-action: none; }
+      padding: 10px 14px; background: #4d726d; color: #fff; cursor: grab; user-select: none; touch-action: none;
+      flex: 0 0 auto; }
     #pp-panel__header.is-dragging { cursor: grabbing; }
     #pp-panel__header strong { font-weight: 600; letter-spacing: 0.4px; }
     #pp-panel__client { font-size: 10px; opacity: 0.85; }
     #pp-panel__toggle { background: transparent; border: 0; color: #fff; font-size: 16px; cursor: pointer; padding: 0 4px; }
     #pp-panel__body { padding: 12px 14px; max-height: 60vh; overflow-y: auto; }
+    /* When a size is set explicitly, panel becomes a flex column so the body
+       stretches and its overflow works instead of overflowing the panel. */
+    #pp-panel.is-sized { display: flex; flex-direction: column; }
+    #pp-panel.is-sized #pp-panel__body { max-height: none; flex: 1 1 auto; overflow-y: auto; }
+
+    /* Resize handles (expanded only). 8 handles: 4 corners + 4 sides. */
+    #pp-panel:not(.is-collapsed) .pp-resize { position: absolute; z-index: 1; touch-action: none; }
+    #pp-panel.is-collapsed .pp-resize { display: none; }
+    #pp-panel .pp-resize-n  { top: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+    #pp-panel .pp-resize-s  { bottom: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
+    #pp-panel .pp-resize-e  { top: 8px; bottom: 8px; right: -3px; width: 6px; cursor: ew-resize; }
+    #pp-panel .pp-resize-w  { top: 8px; bottom: 8px; left: -3px; width: 6px; cursor: ew-resize; }
+    #pp-panel .pp-resize-ne { top: -3px; right: -3px; width: 12px; height: 12px; cursor: nesw-resize; }
+    #pp-panel .pp-resize-nw { top: -3px; left: -3px; width: 12px; height: 12px; cursor: nwse-resize; }
+    #pp-panel .pp-resize-se { bottom: -3px; right: -3px; width: 12px; height: 12px; cursor: nwse-resize; }
+    #pp-panel .pp-resize-sw { bottom: -3px; left: -3px; width: 12px; height: 12px; cursor: nesw-resize; }
+    /* Slight visual hint on the SE corner (the most-used one) */
+    #pp-panel:not(.is-collapsed) .pp-resize-se::after { content: ''; position: absolute; right: 3px; bottom: 3px;
+      width: 6px; height: 6px; border-right: 2px solid #4d726d; border-bottom: 2px solid #4d726d; opacity: 0.5; }
+    body.pp-resizing, body.pp-resizing * { user-select: none !important; }
 
     /* Expanded header \u2014 flex layout for title / client / minus button. */
     #pp-panel:not(.is-collapsed) .pp-expanded-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
@@ -255,6 +320,11 @@
     #pp-panel.is-collapsed .pp-expanded-header { display: none; }
     #pp-panel.is-collapsed .pp-badge-content { display: block; width: 44px; height: 44px; }
     #pp-panel.is-collapsed .pp-badge-content svg { width: 100%; height: 100%; display: block; }
+    /* Avatar mode: full-bleed round image replaces the SVG + coloured disc. */
+    #pp-panel.is-collapsed.has-avatar #pp-panel__header { background: transparent; padding: 0;
+      border: 2px solid #fff; }
+    #pp-panel.is-collapsed.has-avatar .pp-badge-content { width: 60px; height: 60px; border-radius: 50%; overflow: hidden; }
+    #pp-panel.is-collapsed.has-avatar .pp-badge-content img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
     /* Chunky + in the top-right of the collapsed badge to expand */
     #pp-panel.is-collapsed .pp-expand-btn { position: absolute; top: -6px; right: -6px;
@@ -280,6 +350,26 @@
     #pp-panel .pp-fired { color: #1f6fb0; font-weight: 600; }
     #pp-panel .pp-empty { color: #999; font-style: italic; padding: 4px 0; }
     #pp-panel .pp-hint { color: #888; font-size: 10px; margin: 4px 0 8px; font-style: italic; }
+
+    /* Persona picker row */
+    #pp-panel .pp-persona-row { display: flex; gap: 6px; align-items: center; margin: 4px 0 2px; position: relative; }
+    #pp-panel .pp-persona-lib { flex: 0 0 34px; height: 34px; padding: 0; background: #f6f6f2;
+      border: 1px solid #d8d8d8; border-radius: 4px; cursor: pointer; font: 700 14px/1 -apple-system, sans-serif;
+      color: #4d726d; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    #pp-panel .pp-persona-lib:hover { background: #ebeae4; }
+    #pp-panel .pp-persona-preview { width: 100%; height: 100%; object-fit: cover; display: block; }
+    #pp-panel .pp-persona-input { flex: 1; padding: 8px; font-size: 11px; border: 1px solid #d8d8d8; border-radius: 4px; background: #fff; color: #222; }
+    #pp-panel .pp-persona-clear { flex: 0 0 24px; height: 28px; padding: 0; background: transparent; border: 0; color: #b03a2e; font-size: 16px; cursor: pointer; }
+    #pp-panel .pp-persona-clear:hover { color: #7a281f; }
+    /* Popover of avatar choices */
+    #pp-panel .pp-persona-popover { position: absolute; top: 100%; left: 0; margin-top: 6px; background: #fff;
+      border: 1px solid #d8d8d8; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); padding: 8px;
+      z-index: 10; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; min-width: 200px; }
+    #pp-panel .pp-persona-choice { display: flex; flex-direction: column; align-items: center; gap: 4px;
+      cursor: pointer; padding: 4px 2px 6px; border-radius: 4px; border: 1px solid transparent; }
+    #pp-panel .pp-persona-choice:hover { background: #f6f6f2; border-color: #d8d8d8; }
+    #pp-panel .pp-persona-choice img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
+    #pp-panel .pp-persona-choice span { font-size: 10px; color: #333; }
     #pp-panel .pp-url { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
     #pp-panel .pp-current-url { background: #f7f7f7; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; }
     #pp-panel .pp-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
@@ -313,9 +403,20 @@
 
     #pp-panel .pp-thr-rule { display: block; padding: 8px; border: 1px solid #e5e5e5; border-radius: 6px; margin-bottom: 8px; background: #fafafa; }
     #pp-panel .pp-thr-rule + .pp-thr-rule { margin-top: 8px; }
-    #pp-panel .pp-thr-rule .pp-thr-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+    #pp-panel .pp-thr-rule .pp-thr-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
     #pp-panel .pp-thr-rule .pp-thr-header input { flex: 1; padding: 4px 6px; font-size: 12px; font-weight: 600; border: 1px solid transparent; background: transparent; }
     #pp-panel .pp-thr-rule .pp-thr-header input:focus { border-color: #4d726d; background: #fff; outline: none; }
+    /* Collapse chevron */
+    #pp-panel .pp-thr-rule .pp-thr-chevron { flex: 0 0 20px; padding: 2px 0 0; background: transparent; border: 0; color: #666; cursor: pointer; font-size: 12px; }
+    #pp-panel .pp-thr-rule .pp-thr-chevron:hover { color: #4d726d; }
+    /* Multi-line description */
+    #pp-panel .pp-thr-rule .pp-thr-desc { flex: 1; padding: 4px 6px; font: 600 12px/1.35 -apple-system, sans-serif;
+      border: 1px solid transparent; background: transparent; resize: none; overflow: hidden; box-sizing: border-box;
+      min-height: 22px; max-height: 62px; }
+    #pp-panel .pp-thr-rule .pp-thr-desc:focus { border-color: #4d726d; background: #fff; outline: none; }
+    /* Collapsed rule hides the body */
+    #pp-panel .pp-thr-rule.is-collapsed .pp-thr-body { display: none; }
+    #pp-panel .pp-thr-rule.is-collapsed { padding-bottom: 6px; }
     #pp-panel .pp-thr-field { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
     #pp-panel .pp-thr-field label { flex: 0 0 68px; font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
     #pp-panel .pp-thr-field input, #pp-panel .pp-thr-field select { flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid #d8d8d8; border-radius: 3px; background: #fff; }
@@ -524,6 +625,95 @@
     }
   }
 
+  const PP_MIN_W = 300, PP_MIN_H = 240;
+
+  function applySizeToPanel(panel) {
+    if (ui.collapsed) {
+      // Never apply saved size to the collapsed badge
+      panel.classList.remove('is-sized');
+      panel.style.width = ''; panel.style.height = '';
+      return;
+    }
+    if (ui.size && typeof ui.size.w === 'number' && typeof ui.size.h === 'number') {
+      const w = Math.min(Math.max(PP_MIN_W, ui.size.w), window.innerWidth);
+      const h = Math.min(Math.max(PP_MIN_H, ui.size.h), window.innerHeight);
+      panel.style.width = w + 'px';
+      panel.style.height = h + 'px';
+      panel.classList.add('is-sized');
+    } else {
+      panel.classList.remove('is-sized');
+      panel.style.width = ''; panel.style.height = '';
+    }
+  }
+
+  // Attach resize behavior to the 8 handles. dir is a combination of
+  // n/s/e/w that describes which edges are being pushed.
+  function attachResize(panel, handleEl, dir) {
+    let start = null;
+    function onDown(e) {
+      const pt = e.touches ? e.touches[0] : e;
+      const rect = panel.getBoundingClientRect();
+      start = {
+        x: pt.clientX, y: pt.clientY,
+        left: rect.left, top: rect.top,
+        w: rect.width, h: rect.height
+      };
+      document.body.classList.add('pp-resizing');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+      e.preventDefault(); e.stopPropagation();
+    }
+    function onMove(e) {
+      if (!start) return;
+      const pt = e.touches ? e.touches[0] : e;
+      let dx = pt.clientX - start.x;
+      let dy = pt.clientY - start.y;
+      let left = start.left, top = start.top, w = start.w, h = start.h;
+      if (dir.includes('e')) w = start.w + dx;
+      if (dir.includes('s')) h = start.h + dy;
+      if (dir.includes('w')) { w = start.w - dx; left = start.left + dx; }
+      if (dir.includes('n')) { h = start.h - dy; top = start.top + dy; }
+      // Clamp to mins; recompute left/top so the opposite edge stays put
+      if (w < PP_MIN_W) {
+        if (dir.includes('w')) left -= (PP_MIN_W - w);
+        w = PP_MIN_W;
+      }
+      if (h < PP_MIN_H) {
+        if (dir.includes('n')) top -= (PP_MIN_H - h);
+        h = PP_MIN_H;
+      }
+      // Clamp to viewport
+      if (left < 0) { w += left; left = 0; }
+      if (top < 0) { h += top; top = 0; }
+      if (left + w > window.innerWidth) w = window.innerWidth - left;
+      if (top + h > window.innerHeight) h = window.innerHeight - top;
+      panel.style.left = left + 'px';
+      panel.style.top = top + 'px';
+      panel.style.width = w + 'px';
+      panel.style.height = h + 'px';
+      panel.classList.add('is-positioned');
+      panel.classList.add('is-sized');
+      if (e.cancelable) e.preventDefault();
+    }
+    function onUp() {
+      if (!start) return;
+      document.body.classList.remove('pp-resizing');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+      // Persist final size and position
+      ui.size = { w: parseFloat(panel.style.width) || 0, h: parseFloat(panel.style.height) || 0 };
+      ui.pos = { left: parseFloat(panel.style.left) || 0, top: parseFloat(panel.style.top) || 0 };
+      saveUi();
+      start = null;
+    }
+    handleEl.addEventListener('mousedown', onDown);
+    handleEl.addEventListener('touchstart', onDown, { passive: false });
+  }
+
   function attachDrag(panel, header) {
     let start = null;
     function onDown(e) {
@@ -592,6 +782,8 @@
     }
     if (ui.collapsed) panel.classList.add('is-collapsed');
     else panel.classList.remove('is-collapsed');
+    if (ui.collapsed && config.avatarUrl) panel.classList.add('has-avatar');
+    else panel.classList.remove('has-avatar');
 
     clear(panel);
 
@@ -599,9 +791,17 @@
     const header = el('div', { id: 'pp-panel__header' });
     header.title = ui.collapsed ? 'Drag to move \u00B7 click + to expand' : 'Drag to move';
 
-    // Collapsed content: Salesforce cloud badge + expand (+) button
+    // Collapsed content: Salesforce cloud badge OR persona avatar + expand (+) button
     const badge = el('div', { className: 'pp-badge-content' });
-    badge.innerHTML = SF_CLOUD_SVG;
+    if (config.avatarUrl) {
+      const img = document.createElement('img');
+      img.src = config.avatarUrl;
+      img.alt = 'Persona avatar';
+      img.onerror = () => { badge.innerHTML = SF_CLOUD_SVG; panel.classList.remove('has-avatar'); };
+      badge.appendChild(img);
+    } else {
+      badge.innerHTML = SF_CLOUD_SVG;
+    }
     header.appendChild(badge);
     const expandBtn = el('button', { className: 'pp-expand-btn', ariaLabel: 'Expand', text: '+' });
     header.appendChild(expandBtn);
@@ -632,7 +832,19 @@
 
     panel.appendChild(body);
 
-    // Apply saved position after body is in DOM so offsetWidth/Height are correct
+    // Resize handles (expanded only). Added after body so they layer on top.
+    if (!ui.collapsed) {
+      const dirs = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+      for (const d of dirs) {
+        const h = document.createElement('div');
+        h.className = 'pp-resize pp-resize-' + d;
+        panel.appendChild(h);
+        attachResize(panel, h, d);
+      }
+    }
+
+    // Apply saved size + position after body is in DOM so offsetWidth/Height are correct
+    applySizeToPanel(panel);
     applyPositionToPanel(panel);
 
     // Wiring \u2014 drag first so it can suppress the trailing click on move.
@@ -844,12 +1056,37 @@
 
   // -------------------- Threshold-rule editor --------------------
   function renderThresholdRule(rule) {
-    const wrap = el('div', { className: 'pp-thr-rule' });
+    let wrap = el('div', { className: 'pp-thr-rule' });
+    // Collapsed state stored on the rule itself so it survives reloads/imports.
+    // Default: expanded (undefined -> expanded).
+    const collapsed = !!rule._uiCollapsed;
+    if (collapsed) wrap.classList.add('is-collapsed');
 
-    // Header: editable description + delete
+    // Header: chevron + editable description + delete
     const header = el('div', { className: 'pp-thr-header' });
-    const descInput = el('input', { type: 'text', value: rule.description || '' });
+    const chevron = el('button', { className: 'pp-thr-chevron', ariaLabel: collapsed ? 'Expand rule' : 'Collapse rule' });
+    chevron.textContent = collapsed ? '\u25B8' : '\u25BE';
+    chevron.addEventListener('click', (e) => {
+      e.stopPropagation();
+      rule._uiCollapsed = !rule._uiCollapsed;
+      saveConfig(); renderPanel();
+    });
+    // Multi-line auto-expanding description (max 3 lines).
+    const descInput = document.createElement('textarea');
+    descInput.className = 'pp-thr-desc';
+    descInput.rows = 1;
+    descInput.value = rule.description || '';
+    descInput.placeholder = 'Rule description';
+    function autoSize() {
+      descInput.style.height = 'auto';
+      // ~ line-height 1.35 * 12px = 16.2 => 3 lines ~ 49px + padding
+      const max = 62;
+      descInput.style.height = Math.min(descInput.scrollHeight, max) + 'px';
+    }
+    descInput.addEventListener('input', autoSize);
     descInput.addEventListener('change', () => { rule.description = descInput.value; saveConfig(); });
+    // Run once inserted (scrollHeight requires DOM attachment)
+    setTimeout(autoSize, 0);
     const delBtn = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete rule' });
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -857,9 +1094,19 @@
       state.firedRules = state.firedRules.filter(id => id !== rule.id);
       saveConfig(); saveState(); renderPanel();
     });
+    header.appendChild(chevron);
     header.appendChild(descInput);
     header.appendChild(delBtn);
     wrap.appendChild(header);
+
+    // Everything below the header lives inside pp-thr-body so we can hide it
+    // when collapsed via CSS. All subsequent wrap.appendChild calls in this
+    // function actually target this body wrapper (we shadow `wrap` locally).
+    const outerWrap = wrap;
+    const bodyWrap = el('div', { className: 'pp-thr-body' });
+    outerWrap.appendChild(bodyWrap);
+    // eslint-disable-next-line no-func-assign, no-var
+    wrap = bodyWrap;
 
     // Topic + threshold
     const topicField = el('div', { className: 'pp-thr-field' });
@@ -1012,7 +1259,7 @@
     rowActions.appendChild(unfireBtn);
     wrap.appendChild(rowActions);
 
-    return wrap;
+    return outerWrap;
   }
 
   // -------------------- Config view --------------------
@@ -1023,6 +1270,38 @@
     aiBtn.addEventListener('click', (e) => { e.stopPropagation(); openAiPromptModal(); });
     body.appendChild(aiBtn);
     body.appendChild(el('div', { className: 'pp-hint', text: 'Copy a prompt for ChatGPT/Claude, paste back JSON to import.' }));
+
+    // Persona avatar \u2014 shown inside the collapsed badge
+    body.appendChild(el('h4', { text: 'Persona avatar' }));
+    const personaRow = el('div', { className: 'pp-persona-row' });
+    const libBtn = el('button', { className: 'pp-persona-lib', ariaLabel: 'Choose from library', title: 'Choose from library' });
+    libBtn.textContent = '\u25be'; // down-pointing triangle
+    if (config.avatarUrl) {
+      const preview = document.createElement('img');
+      preview.src = config.avatarUrl; preview.className = 'pp-persona-preview';
+      libBtn.textContent = '';
+      libBtn.appendChild(preview);
+    }
+    const urlInput = el('input', { type: 'text', className: 'pp-persona-input', value: config.avatarUrl || '', placeholder: 'https://\u2026image.png  or pick from library' });
+    const clearBtn = el('button', { className: 'pp-persona-clear', ariaLabel: 'Clear avatar', title: 'Clear', text: '\u00d7' });
+    personaRow.appendChild(libBtn);
+    personaRow.appendChild(urlInput);
+    personaRow.appendChild(clearBtn);
+    body.appendChild(personaRow);
+    body.appendChild(el('div', { className: 'pp-hint', text: 'Shown inside the badge when the panel is collapsed. Leave empty for the Salesforce cloud default.' }));
+
+    urlInput.addEventListener('change', () => {
+      config.avatarUrl = urlInput.value.trim();
+      saveConfig(); renderPanel();
+    });
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      config.avatarUrl = ''; saveConfig(); renderPanel();
+    });
+    libBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePersonaLibrary(libBtn, urlInput);
+    });
 
     // Topics
     body.appendChild(el('h4', { text: 'Topics' }));
@@ -1425,11 +1704,9 @@ Config -> Save/load story -> Import.`;
     intentArea.placeholder = 'e.g. Boost Sri Lanka interest \u2014 swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
 
     const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '\uD83D\uDCCB Copy prompt';
-    const openBtn = document.createElement('button'); openBtn.className = 'pp-btn'; openBtn.textContent = 'Open ChatGPT \u2192';
-    openBtn.title = 'Opens chat.openai.com in a new tab';
 
     const rowA = document.createElement('div'); rowA.className = 'pp-ai-row';
-    rowA.appendChild(copyBtn); rowA.appendChild(openBtn);
+    rowA.appendChild(copyBtn);
 
     const outLabel = document.createElement('label'); outLabel.textContent = 'Paste the AI\'s JSON response here';
     outLabel.className = 'pp-ai-label pp-ai-label--gap';
@@ -1468,10 +1745,6 @@ Config -> Save/load story -> Import.`;
         outArea.value = prompt; outArea.focus(); outArea.select();
         alert('Clipboard blocked \u2014 prompt placed in the response box. Copy from there.');
       }
-    });
-
-    openBtn.addEventListener('click', () => {
-      window.open('https://chat.openai.com/', '_blank', 'noopener');
     });
 
     applyBtn.addEventListener('click', () => {
