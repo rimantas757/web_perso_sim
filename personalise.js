@@ -1997,6 +1997,25 @@
     // by importing one.
     body.appendChild(el('h4', { text: 'Claude Gateway' }));
 
+    // One-click connect: ask the local gateway (via Tampermonkey's privileged
+    // request) for its key + current tunnel URL, so there's no copy-paste.
+    const connectBtn = el('button', { className: 'pp-btn pp-btn--full', text: '⚡ Connect to local gateway' });
+    body.appendChild(connectBtn);
+    const connectStatus = el('div', { className: 'pp-hint', text: 'Fetches the key + current tunnel URL from your local gateway (needs the Tampermonkey userscript).' });
+    body.appendChild(connectStatus);
+    connectBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const orig = connectBtn.textContent; connectBtn.disabled = true; connectBtn.textContent = 'Connecting…';
+      try {
+        const out = await bootstrapFromLocalGateway();
+        connectStatus.textContent = '✓ Connected — using ' + out.url;
+        renderPanel();
+      } catch (err) {
+        connectBtn.disabled = false; connectBtn.textContent = orig;
+        connectStatus.textContent = '✗ ' + err.message;
+      }
+    });
+
     const gwUrlRow = el('div', { className: 'pp-row' });
     const gwUrlInput = el('input', { type: 'text', value: ui.gateway.url || '', placeholder: 'http://localhost:4000' });
     gwUrlInput.addEventListener('change', () => { ui.gateway.url = gwUrlInput.value.trim(); saveUi(); });
@@ -2555,6 +2574,53 @@ Config -> Save/load story -> Import.`;
     const j = await r.json().catch(() => ({}));
     if (typeof j.text !== 'string') throw new Error('Gateway returned no text.');
     return j.text;
+  }
+
+  // -------------------- Local-gateway bootstrap (GM_xmlhttpRequest) --------------------
+  // The demo runs on a customer HTTPS site; browsers block it from calling
+  // http://localhost (mixed content). Tampermonkey's GM_xmlhttpRequest issues
+  // the request from the extension context, bypassing mixed-content AND CORS, so
+  // we can reach the SE's local gateway. We use it ONLY for the one localhost
+  // bootstrap call; actual /complete calls still go over the HTTPS tunnel.
+  function hasGM() { return typeof GM_xmlhttpRequest === 'function'; }
+  function bootstrapUrl() {
+    return ((ui.gateway && ui.gateway.bootstrapUrl) || 'http://localhost:4000').replace(/\/+$/, '');
+  }
+  // Promise wrapper around GM_xmlhttpRequest for a simple GET returning JSON.
+  function gatewayGM(method, url, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      try {
+        GM_xmlhttpRequest({
+          method: method, url: url, timeout: timeoutMs || 8000,
+          onload: (res) => { if (done) return; done = true; resolve({ status: res.status, text: res.responseText }); },
+          onerror: () => { if (done) return; done = true; reject(new Error('request failed')); },
+          ontimeout: () => { if (done) return; done = true; reject(new Error('timed out')); }
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  // Call the local gateway's localhost-only /bootstrap (no key) to fetch
+  // { key, tunnelUrl }, then store them so all later calls use the HTTPS tunnel.
+  async function bootstrapFromLocalGateway() {
+    if (!hasGM()) {
+      throw new Error('Connect needs the Tampermonkey userscript (GM_xmlhttpRequest). Paste the URL + key manually instead.');
+    }
+    const res = await gatewayGM('GET', bootstrapUrl() + '/bootstrap', 8000);
+    if (res.status === 404) throw new Error('Gateway has no /bootstrap endpoint — see gateway-bootstrap-patch.md.');
+    if (res.status < 200 || res.status >= 300) throw new Error('Bootstrap returned HTTP ' + res.status + ' (is the local gateway running?).');
+    let j;
+    try { j = JSON.parse(res.text); } catch (e) { throw new Error('Bootstrap returned invalid JSON.'); }
+    const tunnelUrl = typeof j.tunnelUrl === 'string' ? j.tunnelUrl.trim() : '';
+    const key = typeof j.key === 'string' ? j.key.trim() : '';
+    if (!/^https?:\/\//i.test(tunnelUrl)) throw new Error('Bootstrap did not return a usable tunnelUrl.');
+    if (!key) throw new Error('Bootstrap did not return a key.');
+    ui.gateway = ui.gateway || {};
+    ui.gateway.url = tunnelUrl.replace(/\/+$/, '');
+    ui.gateway.key = key;
+    saveUi();
+    return { url: ui.gateway.url };
   }
 
   // Ask the gateway to DESIGN a single popup as self-contained HTML + CSS,
