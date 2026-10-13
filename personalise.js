@@ -271,6 +271,79 @@
     return null;
   }
 
+  // -------------------- HTML sanitizer (for richPopup) --------------------
+  // Best-effort containment for model-authored markup — same trust model as
+  // runScript (SE runs this only on sites they're presenting). Parses in an
+  // inert document, drops executable nodes/attrs, returns a DocumentFragment.
+  function sanitizeHtml(htmlString) {
+    const doc = new DOMParser().parseFromString(String(htmlString), 'text/html');
+    const drop = new Set(['SCRIPT', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'BASE']);
+    const walk = (node) => {
+      // Iterate over a static copy — we mutate as we go.
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 1) { // element
+          if (drop.has(child.tagName)) { child.remove(); continue; }
+          // Strip event handlers + javascript:/unsafe-data URLs.
+          for (const attr of Array.from(child.attributes)) {
+            const name = attr.name.toLowerCase();
+            const val = attr.value || '';
+            if (name.startsWith('on')) { child.removeAttribute(attr.name); continue; }
+            if (['href', 'src', 'action', 'formaction', 'xlink:href'].includes(name)) {
+              if (/^\s*javascript:/i.test(val)) { child.removeAttribute(attr.name); continue; }
+              if (/^\s*data:/i.test(val) && !/^\s*data:image\//i.test(val)) { child.removeAttribute(attr.name); continue; }
+            }
+            if (name === 'style' && /(expression\(|url\(\s*['"]?\s*javascript:)/i.test(val)) {
+              child.removeAttribute(attr.name); continue;
+            }
+          }
+          walk(child);
+        }
+      }
+    };
+    walk(doc.body);
+    const frag = document.createDocumentFragment();
+    for (const n of Array.from(doc.body.childNodes)) frag.appendChild(n);
+    return frag;
+  }
+
+  // Prefix every top-level selector in a CSS string with `scope` so model CSS
+  // can't leak onto the host page. Naive but adequate: splits on rule braces.
+  // Leaves @-rules (media/keyframes/font-face) alone so they still work.
+  function scopeCss(cssString, scope) {
+    const css = String(cssString);
+    let out = '';
+    let i = 0;
+    while (i < css.length) {
+      const open = css.indexOf('{', i);
+      if (open === -1) { out += css.slice(i); break; }
+      const selectorPart = css.slice(i, open);
+      // Find the matching close brace (handles one level of nesting for @media).
+      let depth = 1, j = open + 1;
+      while (j < css.length && depth > 0) {
+        if (css[j] === '{') depth++;
+        else if (css[j] === '}') depth--;
+        j++;
+      }
+      const bodyPart = css.slice(open, j); // includes braces
+      const sel = selectorPart.trim();
+      if (sel.startsWith('@')) {
+        // At-rule: scope the inner block's selectors, keep the at-rule wrapper.
+        if (/^@(media|supports)/i.test(sel)) {
+          const inner = bodyPart.slice(1, -1);
+          out += sel + ' { ' + scopeCss(inner, scope) + ' }';
+        } else {
+          out += sel + ' ' + bodyPart; // keyframes/font-face: leave as-is
+        }
+      } else {
+        const scoped = sel.split(',').map(s => s.trim()).filter(Boolean)
+          .map(s => scope + ' ' + s).join(', ');
+        out += scoped + ' ' + bodyPart;
+      }
+      i = j;
+    }
+    return out;
+  }
+
   const actions = {
     // swapImage handles both <img> src and background-image on any element.
     // Target is a named slot (preferred) or a raw CSS selector (advanced).
@@ -311,6 +384,49 @@
         box.appendChild(cta);
       }
       wrap.appendChild(backdrop); wrap.appendChild(box);
+      document.body.appendChild(wrap);
+      closeBtn.addEventListener('click', () => wrap.remove());
+      backdrop.addEventListener('click', () => wrap.remove());
+      return true;
+    },
+    // LLM-designed, brand-aligned popup. Content is model-authored HTML + CSS
+    // (so it can match any site and include a form). Same trust model as
+    // runScript \u2014 we sanitize best-effort, scope the CSS, own the close +
+    // form-submit so model markup can't navigate away or restyle the host page.
+    richPopup(rule) {
+      if (document.getElementById('personalise-richpopup')) return true;
+      const html = rule.action.html;
+      if (!html) { console.warn('[personalise] richPopup missing html'); return false; }
+
+      const wrap = document.createElement('div'); wrap.id = 'personalise-richpopup';
+      const backdrop = document.createElement('div'); backdrop.className = 'pp-rp__backdrop';
+      const box = document.createElement('div'); box.className = 'pp-rp__box';
+
+      // Scope the model's CSS under our wrapper id so it cannot restyle the host.
+      if (rule.action.css) {
+        const style = document.createElement('style');
+        style.textContent = scopeCss(rule.action.css, '#personalise-richpopup .pp-rp__box');
+        box.appendChild(style);
+      }
+      // Sanitized model markup \u2014 never raw innerHTML.
+      const content = document.createElement('div'); content.className = 'pp-rp__content';
+      content.appendChild(sanitizeHtml(html));
+      box.appendChild(content);
+
+      // We always own the close button (don't trust the model to add one).
+      const closeBtn = document.createElement('button'); closeBtn.className = 'pp-rp__close';
+      closeBtn.setAttribute('aria-label', 'Close'); closeBtn.textContent = '\u00d7';
+      box.appendChild(closeBtn);
+
+      wrap.appendChild(backdrop); wrap.appendChild(box);
+      // Intercept ANY form submit inside the popup (capture) so a demo form never
+      // navigates away \u2014 show a lightweight thank-you instead.
+      wrap.addEventListener('submit', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const thanks = document.createElement('div'); thanks.className = 'pp-rp__thanks';
+        thanks.textContent = 'Thanks \u2014 we\u2019ll be in touch.';
+        content.replaceChildren(thanks);
+      }, true);
       document.body.appendChild(wrap);
       closeBtn.addEventListener('click', () => wrap.remove());
       backdrop.addEventListener('click', () => wrap.remove());
@@ -539,6 +655,18 @@
     #personalise-popup .pp-popup__cta { display: inline-block; margin-top: 16px; padding: 12px 28px;
       background: #4d726d; color: #fff; text-decoration: none; font-size: 0.8rem; font-weight: 600;
       letter-spacing: 1.5px; text-transform: uppercase; }
+
+    /* AI-designed popup shell. We own backdrop/box/close; model HTML+CSS lives
+       inside .pp-rp__content (its CSS is scoped to .pp-rp__box by scopeCss). */
+    #personalise-richpopup .pp-rp__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2147483643; }
+    #personalise-richpopup .pp-rp__box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      z-index: 2147483644; background: #fff; width: min(460px, 92vw); max-height: 88vh; overflow: auto;
+      border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.4); padding: 28px; box-sizing: border-box;
+      font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222; }
+    #personalise-richpopup .pp-rp__close { position: absolute; top: 8px; right: 12px; background: transparent;
+      border: 0; font-size: 24px; cursor: pointer; color: #666; line-height: 1; z-index: 1; }
+    #personalise-richpopup .pp-rp__close:hover { color: #222; }
+    #personalise-richpopup .pp-rp__thanks { padding: 24px 8px; text-align: center; font-size: 16px; color: #2e7d32; }
 
     /* Trainer toggle + pulse overlays */
     #pp-panel .pp-trainer-row { display: flex; align-items: center; justify-content: space-between;
@@ -1346,7 +1474,7 @@
     const actField = el('div', { className: 'pp-thr-field' });
     actField.appendChild(el('label', { text: 'Do' }));
     const actSel = document.createElement('select');
-    for (const [val, label] of [['swapImage', 'Swap image'], ['popup', 'Show popup'], ['runScript', 'Run script']]) {
+    for (const [val, label] of [['swapImage', 'Swap image'], ['popup', 'Show popup'], ['richPopup', 'Popup (AI-designed)'], ['runScript', 'Run script']]) {
       const o = document.createElement('option'); o.value = val; o.textContent = label;
       if (rule.action.type === val) o.selected = true;
       actSel.appendChild(o);
@@ -1357,6 +1485,7 @@
       const keepSel = rule.action.selector || '';
       if (type === 'swapImage') rule.action = { type, selector: keepSel, image: rule.action.image || '' };
       else if (type === 'popup') rule.action = { type, title: rule.action.title || 'Hello', body: rule.action.body || 'A message for you.', cta: rule.action.cta || null };
+      else if (type === 'richPopup') rule.action = { type, intent: rule.action.intent || '', html: rule.action.html || '', css: rule.action.css || '' };
       else rule.action = { type, code: rule.action.code || '// ctx.$(sel) -> element\n// e.g. ctx.$("h1").textContent = "Personalised!";' };
       saveConfig(); renderPanel();
     });
@@ -1365,82 +1494,34 @@
 
     // Action-specific fields
     if (rule.action.type === 'swapImage') {
-      // Named-slot picker: the primary, selector-free way to choose what to
-      // replace. Falls back to a raw CSS selector when the page has no slots
-      // or the SE picks "Custom selector...".
-      const slots = discoverSlots();
-      const CUSTOM = '__custom__';
-      // A rule is in "custom" mode if it already has a selector and no slot, or
-      // its slot no longer exists on this page.
-      const slotNamesHere = new Set(slots.map(s => s.name));
-      let usingCustom = !rule.action.slot || !slotNamesHere.has(rule.action.slot);
+      // Browse is the primary, works-on-any-site way to pick the image to
+      // replace; the raw selector + Pick stay as a manual fallback. (The engine
+      // still honours a `slot` on saved configs; we just don't author it here.)
+      const browseField = el('div', { className: 'pp-thr-field' });
+      browseField.appendChild(el('label', { text: 'Replace' }));
+      const browseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '🖼 Browse page images' });
+      browseBtn.title = 'Pick the image to replace from a gallery of the page’s images';
+      browseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+      });
+      browseField.appendChild(browseBtn);
+      wrap.appendChild(browseField);
 
-      if (slots.length) {
-        const slotField = el('div', { className: 'pp-thr-field' });
-        slotField.appendChild(el('label', { text: 'Replace' }));
-        const slotSel = document.createElement('select');
-        const ph = document.createElement('option');
-        ph.value = ''; ph.textContent = slots.length ? 'Choose a slot…' : '(no slots on page)';
-        ph.disabled = true; slotSel.appendChild(ph);
-        for (const s of slots) {
-          const o = document.createElement('option');
-          o.value = s.name; o.textContent = s.label + (s.kind === 'section' ? ' (section)' : '');
-          if (!usingCustom && rule.action.slot === s.name) o.selected = true;
-          slotSel.appendChild(o);
-        }
-        const customOpt = document.createElement('option');
-        customOpt.value = CUSTOM; customOpt.textContent = 'Custom selector…';
-        if (usingCustom) customOpt.selected = true;
-        slotSel.appendChild(customOpt);
-        if (usingCustom && !rule.action.selector) slotSel.value = '';
-        slotSel.addEventListener('change', () => {
-          if (slotSel.value === CUSTOM) {
-            delete rule.action.slot;
-          } else if (slotSel.value) {
-            rule.action.slot = slotSel.value;
-            delete rule.action.selector;
-          }
-          saveConfig(); renderPanel();
-        });
-        slotField.appendChild(slotSel);
-        wrap.appendChild(slotField);
-
-        // Quick path: browse the page's images even while a slot is selected.
-        const browseField = el('div', { className: 'pp-thr-field' });
-        browseField.appendChild(el('label', { text: '' }));
-        const browseSlotBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '🖼 Browse page images' });
-        browseSlotBtn.title = 'Pick the image to replace from a gallery of the page’s images';
-        browseSlotBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
-        });
-        browseField.appendChild(browseSlotBtn);
-        wrap.appendChild(browseField);
-      }
-
-      // Raw selector + Pick — shown only in custom mode (or when no slots exist).
-      if (usingCustom) {
-        const selField = el('div', { className: 'pp-thr-field' });
-        selField.appendChild(el('label', { text: 'Target' }));
-        const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: '.hero, #banner, img.foo' });
-        selInput.addEventListener('change', () => { rule.action.selector = selInput.value; delete rule.action.slot; saveConfig(); });
-        const browseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Browse' });
-        browseBtn.title = 'Pick the image to replace from a gallery of the page’s images';
-        browseBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
-        });
-        const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
-        pickBtn.title = 'Click an element on the page to capture its selector';
-        pickBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startPick((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
-        });
-        selField.appendChild(selInput);
-        selField.appendChild(browseBtn);
-        selField.appendChild(pickBtn);
-        wrap.appendChild(selField);
-      }
+      // Raw selector + Pick — manual fallback for a target the gallery can't show.
+      const selField = el('div', { className: 'pp-thr-field' });
+      selField.appendChild(el('label', { text: 'Target' }));
+      const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: rule.action.slot ? ('slot: ' + rule.action.slot) : '.hero, #banner, img.foo' });
+      selInput.addEventListener('change', () => { rule.action.selector = selInput.value; delete rule.action.slot; saveConfig(); });
+      const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
+      pickBtn.title = 'Click an element on the page to capture its selector';
+      pickBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startPick((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+      });
+      selField.appendChild(selInput);
+      selField.appendChild(pickBtn);
+      wrap.appendChild(selField);
 
       const imgField = el('div', { className: 'pp-thr-field' });
       imgField.appendChild(el('label', { text: 'Image URL' }));
@@ -1484,6 +1565,54 @@
       });
       ctaHrefField.appendChild(ctaHrefInput);
       wrap.appendChild(ctaHrefField);
+    } else if (rule.action.type === 'richPopup') {
+      // Describe-it → gateway designs HTML+CSS. SE can also hand-edit/paste.
+      const intentField = el('div');
+      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the popup — the gateway designs brand-matched HTML + CSS (mention a form if you want one).' }));
+      const intentArea = el('textarea', { className: 'pp-code' });
+      intentArea.style.height = '48px';
+      intentArea.value = rule.action.intent || '';
+      intentArea.placeholder = 'e.g. Luxury concierge offer with an email signup form';
+      intentArea.spellcheck = false;
+      intentArea.addEventListener('change', () => { rule.action.intent = intentArea.value; saveConfig(); });
+      intentField.appendChild(intentArea);
+      wrap.appendChild(intentField);
+
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: '✨ Design with gateway' });
+      wrap.appendChild(designBtn);
+      const designStatus = el('div', { className: 'pp-hint', text: rule.action.html ? 'Design ready — Test now to preview.' : (gatewayKey() ? 'Gateway: ' + gatewayBaseUrl() : 'No gateway key — set it above, or paste HTML/CSS below.') });
+      wrap.appendChild(designStatus);
+      designBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        rule.action.intent = intentArea.value;
+        if (!gatewayKey()) { alert('No gateway key set — add it in the Claude Gateway section above, or paste HTML/CSS in Advanced.'); return; }
+        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = 'Designing…';
+        try {
+          const out = await gatewayDesignPopup(rule.action.intent);
+          rule.action.html = out.html; rule.action.css = out.css || '';
+          saveConfig(); renderPanel();
+        } catch (err) {
+          designBtn.disabled = false; designBtn.textContent = orig;
+          designStatus.textContent = '✗ ' + err.message;
+        }
+      });
+
+      // Advanced: hand-edit or paste HTML/CSS (also the no-gateway fallback).
+      const details = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = 'Advanced: edit HTML / CSS';
+      if (rule.action.html) details.open = false;
+      details.appendChild(summary);
+      const htmlArea = el('textarea', { className: 'pp-code' });
+      htmlArea.value = rule.action.html || ''; htmlArea.placeholder = '<div>…</div>'; htmlArea.spellcheck = false;
+      htmlArea.addEventListener('change', () => { rule.action.html = htmlArea.value; saveConfig(); });
+      const cssArea = el('textarea', { className: 'pp-code' });
+      cssArea.value = rule.action.css || ''; cssArea.placeholder = '/* CSS (scoped to the popup) */'; cssArea.spellcheck = false;
+      cssArea.addEventListener('change', () => { rule.action.css = cssArea.value; saveConfig(); });
+      details.appendChild(el('div', { className: 'pp-rule-meta', text: 'HTML' }));
+      details.appendChild(htmlArea);
+      details.appendChild(el('div', { className: 'pp-rule-meta', text: 'CSS' }));
+      details.appendChild(cssArea);
+      wrap.appendChild(details);
     } else if (rule.action.type === 'runScript') {
       const codeField = el('div');
       const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026).' });
@@ -1933,11 +2062,19 @@ Preferred form — target a named slot from the list above (selector-free):
 Fallback form — only when no slot fits, target a raw CSS selector:
 { "type": "swapImage", "selector": "<CSS selector>", "image": "<absolute image URL>" }
 
-Show popup:
+Show popup (simple fixed template):
 { "type": "popup",
   "title": "<string>",
   "body": "<string>",
   "cta": { "label": "<button text>", "href": "<url>" }   // optional
+}
+
+AI-designed popup (brand-matched HTML + CSS; use for richer layouts or a form):
+{ "type": "richPopup",
+  "html": "<self-contained popup markup. NO <script>/<iframe>/external resources.
+           Define your own classes. Do NOT include a backdrop or close button \u2014
+           the engine adds those. For a form, use labelled inputs + a submit button.>",
+  "css":  "<CSS targeting the classes you defined; it is scoped to the popup box>"
 }
 
 Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/popup can't cover it):
@@ -2056,6 +2193,36 @@ Config -> Save/load story -> Import.`;
     const j = await r.json().catch(() => ({}));
     if (typeof j.text !== 'string') throw new Error('Gateway returned no text.');
     return j.text;
+  }
+
+  // Ask the gateway to DESIGN a single popup as self-contained HTML + CSS,
+  // brand-matched to the current site (the LLM infers the look). Returns
+  // { html, css }. Fence/prose tolerant.
+  async function gatewayDesignPopup(intent) {
+    const host = window.location.hostname || '(local)';
+    const headings = Array.from(document.querySelectorAll('h1, h2'))
+      .slice(0, 3).map(h => (h.textContent || '').trim()).filter(Boolean);
+    const system = 'You are a web designer. You output a single modal popup as self-contained '
+      + 'HTML plus a CSS block, visually matched to the brand of the given website. '
+      + 'Return ONLY a JSON object: {"html":"...","css":"..."}. Rules: no <script>, no '
+      + '<iframe>, no external stylesheets or JS, no tracking. Inline SVG/text is fine. '
+      + 'Keep it one centered modal’s worth of markup (no backdrop/close button — the host adds those). '
+      + 'If a form is requested, include labelled inputs and a submit button (the host '
+      + 'intercepts submit). CSS selectors should target classes you define inside the popup.';
+    const prompt = 'Website: ' + host + '\n'
+      + (document.title ? 'Page title: ' + document.title + '\n' : '')
+      + (headings.length ? 'Visible headings: ' + headings.join(' | ') + '\n' : '')
+      + 'Design this popup: ' + (intent && intent.trim() ? intent.trim() : 'a tasteful promotional offer with a clear call to action')
+      + '\n\nReturn only the JSON object.';
+    const text = await gatewayComplete(prompt, system);
+    const cleaned = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+    let parsed;
+    try { parsed = JSON.parse(cleaned); }
+    catch (e) { throw new Error('Gateway did not return valid JSON (see Advanced box to fix).'); }
+    if (!parsed || typeof parsed.html !== 'string' || !parsed.html.trim()) {
+      throw new Error('Gateway response had no html field.');
+    }
+    return { html: parsed.html, css: typeof parsed.css === 'string' ? parsed.css : '' };
   }
 
   function openAiPromptModal() {
