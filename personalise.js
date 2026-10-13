@@ -246,6 +246,60 @@
     return out;
   }
 
+  // Detect repeating "card row" containers on the page — the natural homes for
+  // a recommendations strip. A card row = a container with >=2 direct-child
+  // elements that each contain an <img> AND a heading or link. We clone one of
+  // these cards to make personalised recs blend into the site's own styling.
+  function detectCardRows() {
+    const rows = [];
+    const containers = new Set();
+    const vh = window.innerHeight || 800;
+    // A real "card" holds exactly ONE image (not a nested group of cards) and a
+    // bit of text. Walk up from each img to the nearest such ancestor.
+    const cardish = Array.from(document.querySelectorAll('img')).map(img => {
+      let n = img;
+      for (let i = 0; i < 4 && n && n.parentElement; i++) {
+        n = n.parentElement;
+        // Stop as soon as this ancestor carries a heading/link (a card's content)
+        // but still contains only ONE image — i.e. it's a single card, not a row
+        // of cards or a whole section.
+        if (n.querySelectorAll('img').length > 1) { n = null; break; }
+        if (n.querySelector('h1,h2,h3,h4,h5,a,[class*="title"],[class*="content"]')) break;
+      }
+      return n;
+    }).filter(Boolean);
+
+    for (const card of cardish) {
+      const parent = card.parentElement;
+      if (!parent || containers.has(parent)) continue;
+      if (parent.closest('#pp-panel, #pp-ai-modal, #pp-image-gallery')) continue;
+      // Siblings that structurally match: same tag, each has exactly one <img>.
+      const sibs = Array.from(parent.children).filter(c =>
+        c.tagName === card.tagName && c.querySelectorAll('img').length === 1);
+      if (sibs.length < 2) continue;
+      // Reject if the "cards" are section-sized (a wrapper of carousels, etc.).
+      const r0 = sibs[0].getBoundingClientRect();
+      if (r0.height > vh * 0.7) continue;
+      containers.add(parent);
+      // Score: favour MORE cards; mild bonus for reasonable card size. Avoid
+      // rewarding giant blocks (that's what picked the wrong wrapper before).
+      rows.push({
+        container: parent,
+        cardEls: sibs,
+        cardTag: card.tagName,
+        count: sibs.length,
+        score: sibs.length * 1000 + Math.min(r0.width * r0.height, 200000) / 1000
+      });
+    }
+    rows.sort((a, b) => b.score - a.score);
+    return rows;
+  }
+
+  function detectBestCardRow() {
+    const rows = detectCardRows();
+    return rows.length ? rows[0] : null;
+  }
+
   // Resolve a slot name to the concrete element to act on. `want` is 'text' or
   // 'image'. For images we handle the common pattern where the slot attribute
   // sits on a text node (h1/p) while the hero media is a sibling: search the
@@ -432,6 +486,27 @@
       backdrop.addEventListener('click', () => wrap.remove());
       return true;
     },
+    // Recommendations strip. Structured, editable cards (image + text lines).
+    // Blends in by CLONING an existing card row on the page and swapping its
+    // image/text (replace mode); falls back to a generic injected strip when
+    // the page has no card row (add mode). Only textContent is set on clones —
+    // no HTML injection. Idempotent + restorable (see restoreRecStrip).
+    recStrip(rule) {
+      const cards = Array.isArray(rule.action.cards) ? rule.action.cards : [];
+      if (!cards.length) { console.warn('[personalise] recStrip has no cards'); return false; }
+
+      // Resolve the target row: explicit selector, else auto-detect the best one.
+      let row = null;
+      if (rule.action.target) {
+        try { const c = document.querySelector(rule.action.target); if (c) row = detectCardRows().find(r => r.container === c) || { container: c, cardEls: Array.from(c.children) }; } catch (e) { /* bad selector */ }
+      }
+      if (!row && rule.action.mode !== 'add') row = detectBestCardRow();
+
+      if (row && rule.action.mode !== 'add') {
+        return recStripReplace(rule, row, cards);
+      }
+      return recStripInject(rule, cards);
+    },
     // Escape hatch: run an arbitrary JS snippet with access to a ctx helper bag.
     // Only run configs you trust \u2014 same trust model as a bookmarklet.
     runScript(rule) {
@@ -447,6 +522,97 @@
       }
     }
   };
+
+  // -------------------- recStrip helpers --------------------
+  // Original innerHTML of each row we replaced, keyed by rule.id, so un-fire /
+  // reset can put the site back exactly as it was.
+  const __rsOriginals = new Map();
+
+  // Fill one cloned card node from a {image, lines[]} spec, in place, setting
+  // textContent only (no HTML injection). Maps lines onto the card's text
+  // elements in document order.
+  function fillCard(cardEl, spec) {
+    const img = cardEl.querySelector('img');
+    if (img && spec.image) { img.src = spec.image; if (img.hasAttribute('srcset')) img.removeAttribute('srcset'); img.removeAttribute('loading'); }
+    const lines = Array.isArray(spec.lines) ? spec.lines.slice() : [];
+    if (!lines.length) return;
+    // Candidate text holders inside the card, in order. Prefer leaf-ish nodes.
+    const holders = Array.from(cardEl.querySelectorAll('h1,h2,h3,h4,h5,p,span,a,div'))
+      .filter(n => {
+        if (n.querySelector('img')) return false;              // skip media wrappers
+        if (n.children.length && n.textContent.trim() === '') return false;
+        // leaf-ish: no element children, or only inline formatting
+        return n.children.length === 0 || !n.querySelector('h1,h2,h3,h4,h5,p,div');
+      });
+    let li = 0;
+    for (const h of holders) {
+      if (li >= lines.length) break;
+      h.textContent = lines[li++];
+    }
+  }
+
+  // Replace an existing card row's children with cloned, filled cards. Stashes
+  // the original once for restore.
+  function recStripReplace(rule, row, cards) {
+    const container = row.container;
+    if (!container) return false;
+    if (!__rsOriginals.has(rule.id)) __rsOriginals.set(rule.id, { html: container.innerHTML, selector: uniqueSelector(container) });
+    const template = (row.cardEls && row.cardEls[0]) || container.firstElementChild;
+    if (!template) return false;
+    const frag = document.createDocumentFragment();
+    for (const spec of cards) {
+      const clone = template.cloneNode(true);
+      fillCard(clone, spec);
+      frag.appendChild(clone);
+    }
+    container.replaceChildren(frag);
+    container.setAttribute('data-pp-recstrip', rule.id);
+    // Demo safety: links inside the replaced row shouldn't navigate.
+    container.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a, button');
+      if (a && container.contains(a)) e.preventDefault();
+    }, true);
+    return true;
+  }
+
+  // Generic fallback strip when there's no existing card row to clone.
+  function recStripInject(rule, cards) {
+    const id = 'personalise-recstrip-' + rule.id;
+    const prior = document.getElementById(id); if (prior) prior.remove();
+    const wrap = document.createElement('div'); wrap.id = id; wrap.className = 'pp-rs';
+    const content = document.createElement('div'); content.className = 'pp-rs__content';
+    if (rule.action.heading) { const h = document.createElement('h3'); h.textContent = rule.action.heading; content.appendChild(h); }
+    const cardsWrap = document.createElement('div'); cardsWrap.className = 'pp-rs__cards';
+    for (const spec of cards) {
+      const card = document.createElement('div'); card.className = 'pp-rs__card';
+      if (spec.image) { const im = document.createElement('img'); im.src = spec.image; im.alt = ''; card.appendChild(im); }
+      for (const line of (spec.lines || [])) { const p = document.createElement('div'); p.className = 'pp-rs__line'; p.textContent = line; card.appendChild(p); }
+      cardsWrap.appendChild(card);
+    }
+    content.appendChild(cardsWrap);
+    wrap.appendChild(content);
+    wrap.addEventListener('click', (e) => { const a = e.target.closest && e.target.closest('a, button'); if (a && wrap.contains(a)) e.preventDefault(); }, true);
+
+    let anchor = null;
+    try { anchor = rule.action.target ? document.querySelector(rule.action.target) : null; } catch (e) { anchor = null; }
+    if (anchor) anchor.insertAdjacentElement('afterend', wrap);
+    else (document.querySelector('main') || document.body).appendChild(wrap);
+    return true;
+  }
+
+  // Restore a replaced row to its original markup (un-fire / reset), and remove
+  // any injected generic strip.
+  function restoreRecStrip(rule) {
+    const stash = __rsOriginals.get(rule.id);
+    if (stash) {
+      let container = null;
+      try { container = document.querySelector('[data-pp-recstrip="' + rule.id + '"]') || (stash.selector && document.querySelector(stash.selector)); } catch (e) { container = null; }
+      if (container) { container.innerHTML = stash.html; container.removeAttribute('data-pp-recstrip'); }
+      __rsOriginals.delete(rule.id);
+    }
+    const injected = document.getElementById('personalise-recstrip-' + rule.id);
+    if (injected) injected.remove();
+  }
 
   function ruleApplies(rule) {
     if (!rule.appliesOn || !rule.appliesOn.length) return true;
@@ -667,6 +833,20 @@
       border: 0; font-size: 24px; cursor: pointer; color: #666; line-height: 1; z-index: 1; }
     #personalise-richpopup .pp-rp__close:hover { color: #222; }
     #personalise-richpopup .pp-rp__thanks { padding: 24px 8px; text-align: center; font-size: 16px; color: #2e7d32; }
+
+    /* Recommendations strip — minimal baseline so an undesigned strip still
+       reads as a row of cards; model CSS (scoped) layers on top. */
+    [id^="personalise-recstrip-"] { margin: 24px 0; box-sizing: border-box; }
+    [id^="personalise-recstrip-"] .pp-rs__content { max-width: 1200px; margin: 0 auto; padding: 0 16px;
+      font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222; }
+    [id^="personalise-recstrip-"] .cards, [id^="personalise-recstrip-"] .pp-rs__cards {
+      display: flex; gap: 16px; flex-wrap: wrap; }
+    [id^="personalise-recstrip-"] img { max-width: 100%; height: auto; display: block; }
+    [id^="personalise-recstrip-"] .pp-rs__card { flex: 1 1 160px; max-width: 240px; }
+    [id^="personalise-recstrip-"] .pp-rs__line { margin-top: 4px; }
+
+    /* Per-card editor block in the panel */
+    #pp-panel .pp-rs-cardedit { border: 1px solid #eee; border-radius: 6px; padding: 6px; margin-bottom: 6px; background: #fff; }
 
     /* Trainer toggle + pulse overlays */
     #pp-panel .pp-trainer-row { display: flex; align-items: center; justify-content: space-between;
@@ -1474,7 +1654,7 @@
     const actField = el('div', { className: 'pp-thr-field' });
     actField.appendChild(el('label', { text: 'Do' }));
     const actSel = document.createElement('select');
-    for (const [val, label] of [['swapImage', 'Swap image'], ['popup', 'Show popup'], ['richPopup', 'Popup (AI-designed)'], ['runScript', 'Run script']]) {
+    for (const [val, label] of [['swapImage', 'Swap image'], ['popup', 'Show popup'], ['richPopup', 'Popup (AI-designed)'], ['recStrip', 'Recommendations strip'], ['runScript', 'Run script']]) {
       const o = document.createElement('option'); o.value = val; o.textContent = label;
       if (rule.action.type === val) o.selected = true;
       actSel.appendChild(o);
@@ -1486,6 +1666,7 @@
       if (type === 'swapImage') rule.action = { type, selector: keepSel, image: rule.action.image || '' };
       else if (type === 'popup') rule.action = { type, title: rule.action.title || 'Hello', body: rule.action.body || 'A message for you.', cta: rule.action.cta || null };
       else if (type === 'richPopup') rule.action = { type, intent: rule.action.intent || '', html: rule.action.html || '', css: rule.action.css || '' };
+      else if (type === 'recStrip') rule.action = { type, intent: rule.action.intent || '', mode: rule.action.mode || 'replace', target: rule.action.target || '', cards: Array.isArray(rule.action.cards) ? rule.action.cards : [] };
       else rule.action = { type, code: rule.action.code || '// ctx.$(sel) -> element\n// e.g. ctx.$("h1").textContent = "Personalised!";' };
       saveConfig(); renderPanel();
     });
@@ -1613,6 +1794,105 @@
       details.appendChild(el('div', { className: 'pp-rule-meta', text: 'CSS' }));
       details.appendChild(cssArea);
       wrap.appendChild(details);
+    } else if (rule.action.type === 'recStrip') {
+      if (!Array.isArray(rule.action.cards)) rule.action.cards = [];
+      if (!rule.action.mode) rule.action.mode = 'replace';
+
+      const intentField = el('div');
+      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the recommendations — the gateway drafts the cards; you edit image + text below. Replaces an existing card row on the page so it blends in.' }));
+      const intentArea = el('textarea', { className: 'pp-code' });
+      intentArea.style.height = '44px';
+      intentArea.value = rule.action.intent || '';
+      intentArea.placeholder = 'e.g. 4 Sri Lanka specialists / related tours';
+      intentArea.spellcheck = false;
+      intentArea.addEventListener('change', () => { rule.action.intent = intentArea.value; saveConfig(); });
+      intentField.appendChild(intentArea);
+      wrap.appendChild(intentField);
+
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: '✨ Draft cards with gateway' });
+      wrap.appendChild(designBtn);
+      // Detection status: show which row we'll replace.
+      const best = detectBestCardRow();
+      const detText = rule.action.target
+        ? ('Target row: ' + rule.action.target)
+        : (best ? ('Will replace detected card row (' + best.count + ' cards)') : 'No card row detected — a new strip will be added.');
+      const designStatus = el('div', { className: 'pp-hint', text: detText });
+      wrap.appendChild(designStatus);
+      designBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        rule.action.intent = intentArea.value;
+        if (!gatewayKey()) { alert('No gateway key set — add it in the Claude Gateway section above, or add cards by hand below.'); return; }
+        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = 'Drafting…';
+        try {
+          const out = await gatewayDesignRecStrip(rule.action.intent);
+          rule.action.cards = out.cards; rule.action.mode = out.mode; rule.action.target = out.target || '';
+          saveConfig(); renderPanel();
+        } catch (err) {
+          designBtn.disabled = false; designBtn.textContent = orig;
+          designStatus.textContent = '✗ ' + err.message;
+        }
+      });
+
+      // Mode toggle + Pick row.
+      const modeField = el('div', { className: 'pp-thr-field' });
+      modeField.appendChild(el('label', { text: 'Mode' }));
+      const modeSel = document.createElement('select');
+      for (const [v, l] of [['replace', 'Replace existing row'], ['add', 'Add a new strip']]) {
+        const o = document.createElement('option'); o.value = v; o.textContent = l;
+        if (rule.action.mode === v) o.selected = true; modeSel.appendChild(o);
+      }
+      modeSel.addEventListener('change', () => { rule.action.mode = modeSel.value; saveConfig(); });
+      const pickRowBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick row' });
+      pickRowBtn.title = 'Click a card on the page; its row becomes the target';
+      pickRowBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        startPick((sel, elc) => {
+          // Map the clicked element up to its card-row container.
+          const row = detectCardRows().find(r => r.container.contains(elc)) ;
+          rule.action.target = row ? uniqueSelector(row.container) : sel;
+          saveConfig(); renderPanel();
+        });
+      });
+      modeField.appendChild(modeSel);
+      modeField.appendChild(pickRowBtn);
+      wrap.appendChild(modeField);
+
+      // Per-card editors.
+      wrap.appendChild(el('div', { className: 'pp-rule-meta', text: 'Cards (' + rule.action.cards.length + ')' }));
+      rule.action.cards.forEach((card, idx) => {
+        if (!Array.isArray(card.lines)) card.lines = [];
+        const cardBox = el('div', { className: 'pp-rs-cardedit' });
+        // Image row: url + Browse + remove-card
+        const imgRow = el('div', { className: 'pp-thr-field' });
+        imgRow.appendChild(el('label', { text: '#' + (idx + 1) + ' img' }));
+        const imgIn = el('input', { type: 'text', value: card.image || '', placeholder: 'image URL' });
+        imgIn.addEventListener('change', () => { card.image = imgIn.value; saveConfig(); });
+        const browse = el('button', { className: 'pp-btn pp-btn--sm', text: 'Browse' });
+        browse.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          startImageGallery((sel, elc) => {
+            const im = elc && (elc.tagName === 'IMG' ? elc : elc.querySelector && elc.querySelector('img'));
+            card.image = (im && (im.currentSrc || im.src)) || card.image;
+            saveConfig(); renderPanel();
+          });
+        });
+        const delCard = el('button', { className: 'pp-icon', text: '×', title: 'Remove card' });
+        delCard.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.splice(idx, 1); saveConfig(); renderPanel(); });
+        imgRow.appendChild(imgIn); imgRow.appendChild(browse); imgRow.appendChild(delCard);
+        cardBox.appendChild(imgRow);
+        // Text lines
+        const linesText = el('textarea', { className: 'pp-code' });
+        linesText.style.height = '46px';
+        linesText.value = card.lines.join('\n');
+        linesText.placeholder = 'One line of text per row\n(name, title, blurb…)';
+        linesText.spellcheck = false;
+        linesText.addEventListener('change', () => { card.lines = linesText.value.split('\n').map(s => s.trim()).filter(Boolean); saveConfig(); });
+        cardBox.appendChild(linesText);
+        wrap.appendChild(cardBox);
+      });
+      const addCardBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '+ Add card' });
+      addCardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.push({ image: '', lines: [] }); saveConfig(); renderPanel(); });
+      wrap.appendChild(addCardBtn);
     } else if (rule.action.type === 'runScript') {
       const codeField = el('div');
       const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026).' });
@@ -1641,6 +1921,7 @@
     if (!fired) unfireBtn.disabled = true, unfireBtn.style.opacity = 0.5;
     unfireBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (rule.action.type === 'recStrip') restoreRecStrip(rule);
       state.firedRules = state.firedRules.filter(id => id !== rule.id);
       saveState(); renderPanel();
     });
@@ -2077,6 +2358,14 @@ AI-designed popup (brand-matched HTML + CSS; use for richer layouts or a form):
   "css":  "<CSS targeting the classes you defined; it is scoped to the popup box>"
 }
 
+Recommendations strip (structured cards; engine clones an existing card row to
+match the site's styling, or injects a generic strip if none exists):
+{ "type": "recStrip",
+  "mode": "replace" | "add",
+  "target": "<CSS selector of the card-row container to replace (optional)>",
+  "cards": [ { "image": "<image URL or empty>", "lines": ["Name", "Title", "Short blurb"] } ]
+}
+
 Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/popup can't cover it):
 { "type": "runScript",
   "code": "<JS body. \`rule\` and \`ctx\` are in scope. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> read-only scores/firedRules\n  ctx.log(...) -> console.info>"
@@ -2223,6 +2512,51 @@ Config -> Save/load story -> Import.`;
       throw new Error('Gateway response had no html field.');
     }
     return { html: parsed.html, css: typeof parsed.css === 'string' ? parsed.css : '' };
+  }
+
+  // Ask the gateway to BOTH place and design a recommendations strip. Returns
+  // { at:{selector,position}, html, css }. We give it the page's landmark
+  // elements so it can pick a real anchor.
+  // Ask the gateway for STRUCTURED recommendation cards (not HTML). We detect an
+  // existing card row to match (count + sample text) so the model mirrors the
+  // site's tone/length; the engine clones that row to render. Returns
+  // { mode, target, count, cards:[{image, lines[]}] }.
+  async function gatewayDesignRecStrip(intent) {
+    const host = window.location.hostname || '(local)';
+    const row = detectBestCardRow();
+    let targetSel = '', count = 4, sample = '';
+    if (row) {
+      targetSel = uniqueSelector(row.container);
+      count = Math.min(row.count, 6);
+      // Sample text from the first card so the model matches length/tone.
+      const first = row.cardEls[0];
+      sample = Array.from(first.querySelectorAll('h1,h2,h3,h4,p,span'))
+        .map(n => (n.textContent || '').trim()).filter(Boolean).slice(0, 4).join(' | ');
+    }
+    const system = 'You write content for a row of recommendation cards on a web page. '
+      + 'Return ONLY a JSON object: {"cards":[{"image":"<image URL or empty string>",'
+      + '"lines":["line1","line2",...]}]}. Each card has 2-3 SHORT text lines (e.g. name, '
+      + 'title/subtitle, one-line blurb). Match the length and tone of the sample card text. '
+      + 'Leave "image" an empty string unless you are certain of a real, hotlink-safe URL — '
+      + 'the user fills images from the page. No markup, no HTML.';
+    const prompt = 'Website: ' + host + '\n'
+      + (document.title ? 'Page title: ' + document.title + '\n' : '')
+      + (sample ? 'Sample existing card text (match this style/length): ' + sample + '\n' : '')
+      + 'Number of cards: ' + count + '\n'
+      + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page')
+      + '\n\nReturn only the JSON object.';
+    const text = await gatewayComplete(prompt, system);
+    const cleaned = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+    let parsed;
+    try { parsed = JSON.parse(cleaned); }
+    catch (e) { throw new Error('Gateway did not return valid JSON (see Advanced box to fix).'); }
+    const rawCards = Array.isArray(parsed && parsed.cards) ? parsed.cards : [];
+    if (!rawCards.length) throw new Error('Gateway response had no cards.');
+    const cards = rawCards.map(c => ({
+      image: typeof c.image === 'string' ? c.image : '',
+      lines: Array.isArray(c.lines) ? c.lines.map(String) : (typeof c.lines === 'string' ? [c.lines] : [])
+    }));
+    return { mode: row ? 'replace' : 'add', target: targetSel, count, cards };
   }
 
   function openAiPromptModal() {
@@ -2535,10 +2869,13 @@ Config -> Save/load story -> Import.`;
   // route's markup; we need to overwrite it).
   function applyFiredRulesToLiveDOM() {
     for (const rule of config.thresholdRules) {
-      if (rule.action.type !== 'swapImage') continue;
       if (!state.firedRules.includes(rule.id)) continue;
       if (!ruleApplies(rule)) continue;
-      actions.swapImage(rule);
+      // Re-apply the visual, DOM-anchored actions after an SPA route swap.
+      // Both are idempotent (swapImage re-sets the same value; recStrip removes
+      // any prior instance before re-inserting), so no duplicates.
+      if (rule.action.type === 'swapImage') actions.swapImage(rule);
+      else if (rule.action.type === 'recStrip') actions.recStrip(rule);
     }
   }
 
