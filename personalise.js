@@ -484,6 +484,19 @@
     return out.join('\n');
   }
 
+  // Gzip a string and return it as a base64-encoded blob. Uses the native
+  // CompressionStream API (Chrome 80+, Firefox 113+, Safari 16.4+). The gateway
+  // decompresses context.dom_gz server-side before handing to the agent.
+  async function gzipBase64(str) {
+    const bytes = new TextEncoder().encode(str);
+    const cs = new CompressionStream('gzip');
+    const stream = new Response(new Blob([bytes]).stream().pipeThrough(cs));
+    const compressed = new Uint8Array(await stream.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    return btoa(bin);
+  }
+
   // -------------------- HTML sanitizer (for richPopup) --------------------
   // Best-effort containment for model-authored markup — same trust model as
   // runScript (SE runs this only on sites they're presenting). Parses in an
@@ -2967,23 +2980,32 @@ Config -> Save/load story -> Import.`;
       + 'Safety: do NOT write cookies, do NOT send the page’s data to third-party servers '
       + '(no exfiltration), and do NOT eval or inject remote code.\n'
       + 'Return ONLY the JavaScript body — no markdown fences, no function wrapper, no explanation.';
-    // The live, rendered DOM outline — this is the real post-hydration structure
-    // the SE is looking at (far better than fetching the URL, which returns the
-    // pre-render HTML on JS-heavy sites). Use it to pick selectors that exist.
-    let domSkeleton = '';
-    try { domSkeleton = captureDomSkeleton(); } catch (e) { domSkeleton = ''; }
+    // The live, rendered DOM outline — gzipped + base64-encoded so it fits through
+    // the Cloudflare quick-tunnel (~57 KB raw compresses to ~6 KB). The gateway
+    // decompresses context.dom_gz into context.dom before passing to the agent.
+    let domSkeleton = '', domGz = '';
+    try { domSkeleton = captureDomSkeleton(); } catch (e) { /* no DOM capture */ }
+    if (domSkeleton) {
+      try { domGz = await gzipBase64(domSkeleton); } catch (e) { /* send raw fallback */ }
+    }
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (landmarks.length ? 'Landmark elements:\n' + landmarks.join('\n') + '\n' : '')
-      + 'The LIVE rendered DOM of the page is provided below (and in context.dom). '
-      + 'Base every selector on this actual structure — do not guess tag/class names, '
-      + 'and do not match an element by whole-page textContent (that resolves to <html>); '
-      + 'instead target the specific element/class shown here.\n'
-      + (domSkeleton ? '\n--- PAGE DOM (tag#id.class [attrs] “own text” {styles}) ---\n' + domSkeleton + '\n--- END PAGE DOM ---\n\n' : '')
+      + (domSkeleton
+        ? 'The page’s LIVE rendered DOM structure is provided in context.dom '
+          + '(tag#id.class [attrs] “own text” {key styles}). '
+          + 'Base every selector on this actual structure — do not guess tag/class names, '
+          + 'and do not match an element by whole-page textContent (that resolves to <html>); '
+          + 'instead target the specific element/class shown there.\n'
+        : '')
       + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
       + '\n\nReturn only the JavaScript body.';
     // Text mode (no schema) — gatewayAgent returns the raw body string.
-    let text = await gatewayAgent(system + '\n\n' + prompt, null, { host: host, title: document.title, dom: domSkeleton });
+    // Send dom_gz (gzipped base64) — the gateway decompresses it into context.dom
+    // for the agent. Falls back to raw dom if gzip failed.
+    const ctx = { host: host, title: document.title };
+    if (domGz) { ctx.dom_gz = domGz; } else if (domSkeleton) { ctx.dom = domSkeleton; }
+    let text = await gatewayAgent(system + '\n\n' + prompt, null, ctx);
     text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
     // Unwrap an accidental function/arrow wrapper so we store a plain body.
     const fn = text.match(/^(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{([\s\S]*)\}\s*;?$/);
