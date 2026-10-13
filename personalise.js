@@ -400,88 +400,26 @@
     return null;
   }
 
-  // -------------------- DOM skeleton (for gatewayDesignScript) --------------
-  // Serialize the LIVE, rendered DOM into a compact, indented outline the agent
-  // can read to pick real selectors — tags + id + classes + data-* + a few key
-  // attrs + short own-text, plus a little styling signal on structural nodes.
-  // We strip the noise that bloats outerHTML without helping selection: scripts,
-  // styles, SVG internals, comments, our own panel, and long/base64 values.
-  // Uncapped by design (see decision) — the whole page skeleton goes.
-  function captureDomSkeleton() {
-    const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'LINK', 'META', 'SVG', 'CANVAS', 'IFRAME', 'HEAD']);
-    const KEEP_ATTRS = ['src', 'alt', 'href', 'title', 'role', 'aria-label', 'placeholder', 'type', 'name', 'value'];
-    // Key computed styles that convey look without dumping full CSS.
-    const STYLE_KEYS = ['display', 'color', 'background-color', 'background-image', 'font-family', 'font-size', 'font-weight', 'border-radius', 'text-align'];
-    const out = [];
-
-    function shortText(node) {
-      // Own text only (direct text-node children), collapsed + trimmed.
-      let t = '';
-      for (const n of node.childNodes) {
-        if (n.nodeType === 3) t += n.nodeValue;
-      }
-      t = t.replace(/\s+/g, ' ').trim();
-      return t.length > 120 ? t.slice(0, 117) + '…' : t;
+  // -------------------- Live HTML capture (for gatewayDesignScript) ----------
+  // Clone document.body, strip our own panel + noise (scripts, styles, SVGs,
+  // hidden elements), and return the cleaned innerHTML. This gives the agent the
+  // REAL markup with real classes/attrs/text so it can write accurate selectors.
+  function captureLiveHtml() {
+    var clone = document.body.cloneNode(true);
+    var ours = clone.querySelectorAll('#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-pick-overlay, #pp-pick-hint, #pp-preapply, [id^="personalise-"]');
+    for (var i = 0; i < ours.length; i++) ours[i].remove();
+    var noise = clone.querySelectorAll('script, style, noscript, iframe, link[rel="stylesheet"]');
+    for (var j = 0; j < noise.length; j++) noise[j].remove();
+    var svgs = clone.querySelectorAll('svg');
+    for (var k = 0; k < svgs.length; k++) { svgs[k].textContent = ''; svgs[k].setAttribute('data-stripped', 'svg-contents'); }
+    var allLive = document.body.querySelectorAll('*');
+    var allClone = clone.querySelectorAll('*');
+    for (var m = 0; m < allLive.length && m < allClone.length; m++) {
+      try { var cs = getComputedStyle(allLive[m]); if (cs.display === 'none' || cs.visibility === 'hidden') allClone[m].remove(); } catch (e) {}
     }
-    function attrStr(elm) {
-      const parts = [];
-      const id = elm.id ? '#' + elm.id : '';
-      const cls = (elm.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).join('.');
-      let head = elm.tagName.toLowerCase() + id + (cls ? '.' + cls : '');
-      for (const a of KEEP_ATTRS) {
-        if (!elm.hasAttribute(a)) continue;
-        let v = elm.getAttribute(a) || '';
-        if (/^data:/.test(v)) v = 'data:…';                 // drop base64 blobs
-        if (v.length > 100) v = v.slice(0, 97) + '…';
-        parts.push(a + '="' + v + '"');
-      }
-      for (const a of elm.attributes) {
-        if (a.name.indexOf('data-') === 0) {
-          let v = a.value || '';
-          if (v.length > 60) v = v.slice(0, 57) + '…';
-          parts.push(a.name + '="' + v + '"');
-        }
-      }
-      return head + (parts.length ? ' [' + parts.join(' ') + ']' : '');
-    }
-    function styleStr(elm) {
-      let cs;
-      try { cs = getComputedStyle(elm); } catch (e) { return ''; }
-      const bits = [];
-      for (const k of STYLE_KEYS) {
-        let v = cs.getPropertyValue(k);
-        if (!v) continue;
-        if (k === 'background-image' && v === 'none') continue;
-        if (k === 'background-color' && (v === 'rgba(0, 0, 0, 0)' || v === 'transparent')) continue;
-        if (k === 'display' && v === 'block') continue;         // the default, skip noise
-        if (k === 'text-align' && (v === 'start' || v === 'left')) continue;
-        if (v.length > 60) v = v.slice(0, 57) + '…';
-        bits.push(k + ':' + v);
-      }
-      return bits.length ? '  {' + bits.join('; ') + '}' : '';
-    }
-    function visible(elm) {
-      // Skip elements that aren't rendered — they'd mislead selection.
-      try {
-        const cs = getComputedStyle(elm);
-        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-      } catch (e) { /* detached — treat as visible */ }
-      return true;
-    }
-    function walk(node, depth) {
-      if (node.nodeType !== 1) return;
-      if (SKIP_TAGS.has(node.tagName)) return;
-      if (node.id === 'pp-panel' || node.id === 'pp-ai-modal' ||
-          (node.className && typeof node.className === 'string' && /\bpp-/.test(node.className))) return; // our own UI
-      if (!visible(node)) return;
-      const indent = '  '.repeat(depth);
-      const txt = shortText(node);
-      out.push(indent + attrStr(node) + (txt ? '  “' + txt + '”' : '') + styleStr(node));
-      for (const child of node.children) walk(child, depth + 1);
-    }
-    const body = document.body;
-    if (body) for (const child of body.children) walk(child, 0);
-    return out.join('\n');
+    var styled = clone.querySelectorAll('[style]');
+    for (var n = 0; n < styled.length; n++) styled[n].removeAttribute('style');
+    return clone.innerHTML;
   }
 
   // -------------------- HTML sanitizer (for richPopup) --------------------
@@ -2967,29 +2905,29 @@ Config -> Save/load story -> Import.`;
       + 'Safety: do NOT write cookies, do NOT send the page’s data to third-party servers '
       + '(no exfiltration), and do NOT eval or inject remote code.\n'
       + 'Return ONLY the JavaScript body — no markdown fences, no function wrapper, no explanation.';
-    // The live, rendered DOM outline. The whole POST body is gzip-compressed at
-    // the transport level by gatewayAgent (Content-Encoding: gzip), so even 60+
-    // KB skeletons fit through the Cloudflare quick-tunnel comfortably.
-    let domSkeleton = '';
-    try { domSkeleton = captureDomSkeleton(); } catch (e) { /* no DOM capture */ }
-    const prompt = 'Website: ' + host + '\n'
+    // Capture the REAL rendered HTML (cleaned: no scripts/styles/SVGs/hidden/panel).
+    // Gzip at the transport level keeps it under the tunnel ceiling.
+    var pageHtml = '';
+    try { pageHtml = captureLiveHtml(); } catch (e) { /* no capture */ }
+    var prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (landmarks.length ? 'Landmark elements:\n' + landmarks.join('\n') + '\n' : '')
-      + (domSkeleton
-        ? 'The page’s LIVE rendered DOM structure is provided in context.dom '
-          + '(tag#id.class [attrs] “own text” {key styles}). '
-          + 'Base every selector on this actual structure — do not guess tag/class names, '
-          + 'and do not match an element by whole-page textContent (that resolves to <html>); '
-          + 'instead target the specific element/class shown there.\n'
+      + (pageHtml
+        ? 'The LIVE rendered HTML of the page body is provided in context.html. '
+          + 'This is the real markup with real classes, ids, data attributes, and text. '
+          + 'Base every CSS selector on this actual structure. Do not guess class names. '
+          + 'Do not match an element by walking all elements and checking textContent '
+          + '(that resolves to the body or html element). Instead, target the specific '
+          + 'element by its class, id, or data attribute as shown in the HTML.\n'
         : '')
       + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
       + '\n\nReturn only the JavaScript body.';
-    // Text mode (no schema) -- gatewayAgent returns the raw body string.
-    // DOM goes in context.dom; the whole POST body is gzip-compressed at the
+    // Text mode -- gatewayAgent returns the raw body string.
+    // HTML goes in context.html; the whole POST body is gzip-compressed at the
     // transport level inside gatewayAgent (Content-Encoding: gzip).
-    const ctx = { host: host, title: document.title };
-    if (domSkeleton) ctx.dom = domSkeleton;
-    let text = await gatewayAgent(system + '\n\n' + prompt, null, ctx);
+    var ctx = { host: host, title: document.title };
+    if (pageHtml) ctx.html = pageHtml;
+        let text = await gatewayAgent(system + '\n\n' + prompt, null, ctx);
     text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
     // Unwrap an accidental function/arrow wrapper so we store a plain body.
     const fn = text.match(/^(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{([\s\S]*)\}\s*;?$/);
