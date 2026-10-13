@@ -2024,8 +2024,38 @@
       addCardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.push({ image: '', lines: [] }); saveConfig(); renderPanel(); });
       wrap.appendChild(addCardBtn);
     } else if (rule.action.type === 'runScript') {
+      // Describe-it -> gateway writes the JS into the code box; SE reviews + Tests.
+      const intentField = el('div');
+      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the change for the gateway to script (e.g. "replace the hero video with an image at <url> and stop the video").' }));
+      const intentArea = el('textarea', { className: 'pp-code' });
+      intentArea.style.height = '44px';
+      intentArea.value = rule.action.scriptIntent || '';
+      intentArea.placeholder = 'Describe what to change\u2026';
+      intentArea.spellcheck = false;
+      intentArea.addEventListener('change', () => { rule.action.scriptIntent = intentArea.value; saveConfig(); });
+      intentField.appendChild(intentArea);
+      wrap.appendChild(intentField);
+
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Design with gateway' });
+      wrap.appendChild(designBtn);
+      const designStatus = el('div', { className: 'pp-hint', text: gatewayKey() ? 'Gateway: ' + gatewayBaseUrl() + ' \u2014 writes JS into the box below; review then Test now.' : 'No gateway key \u2014 set it in Claude Gateway, or write JS by hand below.' });
+      wrap.appendChild(designStatus);
+      designBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        rule.action.scriptIntent = intentArea.value;
+        if (!gatewayKey()) { alert('No gateway key set \u2014 add it in the Claude Gateway section, or write JS by hand.'); return; }
+        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = 'Writing\u2026';
+        try {
+          rule.action.code = await gatewayDesignScript(rule.action.scriptIntent);
+          saveConfig(); renderPanel();
+        } catch (err) {
+          designBtn.disabled = false; designBtn.textContent = orig;
+          designStatus.textContent = '\u2717 ' + err.message;
+        }
+      });
+
       const codeField = el('div');
-      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026).' });
+      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026). Review, then Test now.' });
       const codeArea = el('textarea', { className: 'pp-code' });
       codeArea.value = rule.action.code || '';
       codeArea.spellcheck = false;
@@ -2775,6 +2805,42 @@ Config -> Save/load story -> Import.`;
       lines: Array.isArray(c.lines) ? c.lines.map(String) : (typeof c.lines === 'string' ? [c.lines] : [])
     }));
     return { mode: row ? 'replace' : 'add', target: targetSel, count, cards };
+  }
+
+  // Ask the gateway to write a runScript JS body from a plain-language intent.
+  // The snippet runs with `rule` and `ctx` in scope (see makeCtx). Returns the
+  // JS string (fences + any function wrapper stripped); the SE reviews + Tests.
+  async function gatewayDesignScript(intent) {
+    const host = window.location.hostname || '(local)';
+    // A few landmark selectors so the model can target real elements.
+    const landmarks = [];
+    const seen = new Set();
+    for (const sel of ['main', 'section', '[class*="hero"]', 'video', '[class*="card"]', 'footer']) {
+      const node = document.querySelector(sel);
+      if (node && !seen.has(node)) {
+        seen.add(node);
+        const cls = (node.getAttribute('class') || '').split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+        landmarks.push('  - ' + sel + '  (' + node.tagName.toLowerCase() + (cls ? '.' + cls : '') + ')');
+      }
+      if (landmarks.length >= 6) break;
+    }
+    const system = 'You write a short JavaScript snippet BODY for a web-page personalisation engine. '
+      + 'It runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel) -> first element, '
+      + 'ctx.$$(sel) -> all elements (array), ctx.state, ctx.config, ctx.log(...). '
+      + 'Return ONLY the JS body: no markdown fences, no function wrapper, no explanation. '
+      + 'Guard against missing elements. Do NOT use fetch/XHR, navigation, localStorage, or cookies.';
+    const prompt = 'Website: ' + host + '\n'
+      + (document.title ? 'Page title: ' + document.title + '\n' : '')
+      + (landmarks.length ? 'Some elements on the page:\n' + landmarks.join('\n') + '\n' : '')
+      + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
+      + '\n\nReturn only the JavaScript body.';
+    let text = await gatewayComplete(prompt, system);
+    text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    // Unwrap an accidental function/arrow wrapper so we store a plain body.
+    const fn = text.match(/^(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{([\s\S]*)\}\s*;?$/);
+    if (fn) text = fn[1].trim();
+    if (!text) throw new Error('Gateway returned an empty script.');
+    return text;
   }
 
   function openAiPromptModal() {
