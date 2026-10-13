@@ -2094,7 +2094,7 @@
       });
 
       const codeField = el('div');
-      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026). Review, then Test now.' });
+      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs in the page with `rule` and `ctx` in scope \u2014 ctx.$(sel), ctx.$$(sel), ctx.state (visitor topic scores), ctx.config, ctx.log(\u2026). Normal DOM/fetch APIs are available too. Review, then Test now.' });
       const codeArea = el('textarea', { className: 'pp-code' });
       codeArea.value = rule.action.code || '';
       codeArea.spellcheck = false;
@@ -2608,7 +2608,7 @@ match the site's styling, or injects a generic strip if none exists):
 
 Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/popup can't cover it):
 { "type": "runScript",
-  "code": "<JS body. \`rule\` and \`ctx\` are in scope. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> read-only scores/firedRules\n  ctx.log(...) -> console.info>"
+  "code": "<JS body. \`rule\` and \`ctx\` are in scope; normal DOM/fetch APIs too. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> visitor signals {scores, firedRules, scoredUrls}\n  ctx.config -> full config (topics, rules)\n  ctx.log(...) -> console.info. Write robust, idempotent code; guard missing elements; no cookie writes or sending page data to third parties>"
 }
 
 AUTHORING RULES
@@ -2864,14 +2864,30 @@ Config -> Save/load story -> Import.`;
       }
       if (landmarks.length >= 6) break;
     }
-    const system = 'You write a short JavaScript snippet BODY for a web-page personalisation engine. '
-      + 'It runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel) -> first element, '
-      + 'ctx.$$(sel) -> all elements (array), ctx.state, ctx.config, ctx.log(...). '
-      + 'Return ONLY the JS body: no markdown fences, no function wrapper, no explanation. '
-      + 'Guard against missing elements. Do NOT use fetch/XHR, navigation, localStorage, or cookies.';
+    const system = 'You write the JavaScript BODY of a web-page personalisation snippet. '
+      + 'It runs in the page, with `rule` and `ctx` already in scope. Available API:\n'
+      + '  ctx.$(sel)   -> first matching element (or null)\n'
+      + '  ctx.$$(sel)  -> array of all matching elements\n'
+      + '  ctx.state    -> visitor signals: {scores:{<topicId>:number}, firedRules:[id], scoredUrls:[url]} '
+      + '(how interested the visitor is in each topic, from pages they viewed)\n'
+      + '  ctx.config   -> the full config, incl. config.topics (topic ids + labels) and config.thresholdRules\n'
+      + '  ctx.log(...) -> console.info for debugging\n'
+      + 'You may also use the normal DOM/browser APIs directly (document, window, Image, '
+      + 'IntersectionObserver, fetch to LOAD images/JSON/content, and navigation/CTA changes '
+      + 'when the task calls for them).\n'
+      + 'Write ROBUST code, not the shortest possible: guard against missing elements, handle the '
+      + 'case where there are several matches, and wait for late-loading elements when needed (e.g. a '
+      + 'short MutationObserver or a bounded poll) rather than assuming everything exists at run time. '
+      + 'The snippet may run more than once, so make it idempotent (don’t stack duplicate changes). '
+      + 'Tailor behaviour to ctx.state when that improves the result.\n'
+      + 'Safety: do NOT write cookies, do NOT send the page’s data to third-party servers '
+      + '(no exfiltration), and do NOT eval or inject remote code.\n'
+      + 'Return ONLY the JavaScript body — no markdown fences, no function wrapper, no explanation.';
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
-      + (landmarks.length ? 'Some elements on the page:\n' + landmarks.join('\n') + '\n' : '')
+      + (landmarks.length ? 'Some elements already present on the page:\n' + landmarks.join('\n') + '\n' : '')
+      + 'If it helps you target the right elements, you may fetch ' + (window.location.href || host)
+      + ' and inspect its real DOM structure before writing selectors.\n'
       + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
       + '\n\nReturn only the JavaScript body.';
     // Text mode (no schema) — gatewayAgent returns the raw body string.
