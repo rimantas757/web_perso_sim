@@ -482,6 +482,24 @@
         const where = rule.action.slot ? `slot "${rule.action.slot}"` : `selector ${rule.action.selector}`;
         console.warn(`[personalise] swapImage target not found: ${where}`); return false;
       }
+      // Video target: replace it WITH a video (swap the source + play), not an
+      // image — a playing hero would cover any poster/background we set. Checked
+      // BEFORE the image guard since video rules carry `video`, not `image`.
+      if (el.tagName === 'VIDEO' || rule.action.isVideo) {
+        const vurl = rule.action.video;
+        if (!vurl) { console.warn('[personalise] swapImage: video target needs a video URL'); return false; }
+        const v = el.tagName === 'VIDEO' ? el : (el.querySelector && el.querySelector('video'));
+        if (!v) { console.warn('[personalise] swapImage: no <video> at target'); return false; }
+        try { v.pause && v.pause(); } catch (e) { /* ignore */ }
+        v.querySelectorAll('source').forEach(s => s.remove());
+        v.removeAttribute('poster');
+        v.src = vurl;
+        v.muted = true; v.setAttribute('muted', '');
+        v.setAttribute('autoplay', ''); v.setAttribute('playsinline', ''); v.loop = v.loop || true;
+        try { v.load && v.load(); } catch (e) { /* ignore */ }
+        try { const p = v.play && v.play(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+        return true;
+      }
       const image = rule.action.image;
       if (!image) { console.warn('[personalise] swapImage missing image'); return false; }
       if (el.tagName === 'IMG') {
@@ -490,13 +508,6 @@
         if (el.srcset) el.removeAttribute('srcset');
         el.removeAttribute('data-src'); el.removeAttribute('data-srcset');
         el.classList.remove('lazy');
-      } else if (el.tagName === 'VIDEO') {
-        // Hero video: swap the poster, and lay the image over the video so the
-        // change is visible even if the video is playing.
-        el.setAttribute('poster', image);
-        el.style.backgroundImage = `url('${image}')`;
-        el.style.backgroundSize = el.style.backgroundSize || 'cover';
-        el.style.backgroundPosition = el.style.backgroundPosition || 'center';
       } else {
         el.style.backgroundImage = `url('${image}')`;
         el.style.backgroundSize = el.style.backgroundSize || 'cover';
@@ -1004,8 +1015,11 @@
     #pp-image-gallery .pp-ig-empty { padding: 40px 20px; text-align: center; color: #888; }
     #pp-image-gallery .pp-ig-grid { padding: 16px 20px; overflow-y: auto;
       display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-    #pp-image-gallery .pp-ig-cell { padding: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;
+    #pp-image-gallery .pp-ig-cell { position: relative; padding: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;
       cursor: pointer; background: #fafafa; text-align: left; }
+    #pp-image-gallery .pp-ig-vbadge { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px;
+      border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff; font-size: 10px; line-height: 22px;
+      text-align: center; pointer-events: none; }
     #pp-image-gallery .pp-ig-cell:hover { border-color: #ff6b3d; box-shadow: 0 4px 14px rgba(255,107,61,0.25); }
     #pp-image-gallery .pp-ig-thumb { width: 100%; height: 92px; background-size: cover; background-position: center;
       background-repeat: no-repeat; background-color: #eee; }
@@ -1144,7 +1158,8 @@
         const kindTag = im.kind === 'bg' ? ' · bg' : (im.kind === 'video' ? ' · video' : '');
         meta.textContent = `${im.w}×${im.h}${kindTag}` + (i === 0 ? ' · largest' : '');
         cell.appendChild(thumb); cell.appendChild(meta);
-        cell.title = im.src;
+        cell.title = im.kind === 'video' ? (im.src + '  — video; replace it with a video (.mp4)') : im.src;
+        if (im.kind === 'video') { const badge = document.createElement('span'); badge.className = 'pp-ig-vbadge'; badge.textContent = '▶'; cell.appendChild(badge); }
         // Hover highlights the real element on the page so the SE can confirm.
         cell.addEventListener('mouseenter', () => flashElement(im.el, true));
         cell.addEventListener('mouseleave', () => flashElement(im.el, false));
@@ -1766,11 +1781,19 @@
       // still honours a `slot` on saved configs; we just don't author it here.)
       const browseField = el('div', { className: 'pp-thr-field' });
       browseField.appendChild(el('label', { text: 'Replace' }));
+      // When the picked element is a <video>, this becomes a video->video swap.
+      const onTargetPicked = (sel, elc) => {
+        rule.action.selector = sel; delete rule.action.slot;
+        const isVid = !!(elc && (elc.tagName === 'VIDEO' || (elc.querySelector && elc.querySelector('video'))));
+        rule.action.isVideo = isVid;
+        if (isVid) delete rule.action.image; else delete rule.action.video;
+        saveConfig(); renderPanel();
+      };
       const browseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '🖼 Browse page images' });
-      browseBtn.title = 'Pick the image to replace from a gallery of the page’s images';
+      browseBtn.title = 'Pick the image/video to replace from a gallery of the page’s media';
       browseBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+        startImageGallery(onTargetPicked);
       });
       browseField.appendChild(browseBtn);
       wrap.appendChild(browseField);
@@ -1779,23 +1802,44 @@
       const selField = el('div', { className: 'pp-thr-field' });
       selField.appendChild(el('label', { text: 'Target' }));
       const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: rule.action.slot ? ('slot: ' + rule.action.slot) : '.hero, #banner, img.foo' });
-      selInput.addEventListener('change', () => { rule.action.selector = selInput.value; delete rule.action.slot; saveConfig(); });
+      selInput.addEventListener('change', () => {
+        rule.action.selector = selInput.value; delete rule.action.slot;
+        let node = null; try { node = document.querySelector(selInput.value); } catch (e) { node = null; }
+        rule.action.isVideo = !!(node && node.tagName === 'VIDEO');
+        saveConfig(); renderPanel();
+      });
       const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
       pickBtn.title = 'Click an element on the page to capture its selector';
       pickBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        startPick((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+        startPick(onTargetPicked);
       });
       selField.appendChild(selInput);
       selField.appendChild(pickBtn);
       wrap.appendChild(selField);
 
-      const imgField = el('div', { className: 'pp-thr-field' });
-      imgField.appendChild(el('label', { text: 'Image URL' }));
-      const imgInput = el('input', { type: 'text', value: rule.action.image || '', placeholder: 'https://\u2026' });
-      imgInput.addEventListener('change', () => { rule.action.image = imgInput.value; saveConfig(); });
-      imgField.appendChild(imgInput);
-      wrap.appendChild(imgField);
+      // Is the target a video? (flag set at pick time, or selector resolves to one.)
+      let targetIsVideo = !!rule.action.isVideo;
+      if (!targetIsVideo && rule.action.selector) {
+        try { const n = document.querySelector(rule.action.selector); if (n && n.tagName === 'VIDEO') targetIsVideo = true; } catch (e) { /* ignore */ }
+      }
+
+      if (targetIsVideo) {
+        const vidField = el('div', { className: 'pp-thr-field' });
+        vidField.appendChild(el('label', { text: 'Video URL' }));
+        const vidInput = el('input', { type: 'text', value: rule.action.video || '', placeholder: 'https://\u2026.mp4' });
+        vidInput.addEventListener('change', () => { rule.action.video = vidInput.value; saveConfig(); });
+        vidField.appendChild(vidInput);
+        wrap.appendChild(vidField);
+        wrap.appendChild(el('div', { className: 'pp-hint', text: 'This target is a video \u2014 replace it with a video file (.mp4). It autoplays muted.' }));
+      } else {
+        const imgField = el('div', { className: 'pp-thr-field' });
+        imgField.appendChild(el('label', { text: 'Image URL' }));
+        const imgInput = el('input', { type: 'text', value: rule.action.image || '', placeholder: 'https://\u2026' });
+        imgInput.addEventListener('change', () => { rule.action.image = imgInput.value; saveConfig(); });
+        imgField.appendChild(imgInput);
+        wrap.appendChild(imgField);
+      }
     } else if (rule.action.type === 'popup') {
       const titleField = el('div', { className: 'pp-thr-field' });
       titleField.appendChild(el('label', { text: 'Title' }));
