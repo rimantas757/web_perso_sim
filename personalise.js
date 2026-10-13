@@ -484,19 +484,6 @@
     return out.join('\n');
   }
 
-  // Gzip a string and return it as a base64-encoded blob. Uses the native
-  // CompressionStream API (Chrome 80+, Firefox 113+, Safari 16.4+). The gateway
-  // decompresses context.dom_gz server-side before handing to the agent.
-  async function gzipBase64(str) {
-    const bytes = new TextEncoder().encode(str);
-    const cs = new CompressionStream('gzip');
-    const stream = new Response(new Blob([bytes]).stream().pipeThrough(cs));
-    const compressed = new Uint8Array(await stream.arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
-    return btoa(bin);
-  }
-
   // -------------------- HTML sanitizer (for richPopup) --------------------
   // Best-effort containment for model-authored markup — same trust model as
   // runScript (SE runs this only on sites they're presenting). Parses in an
@@ -2980,14 +2967,11 @@ Config -> Save/load story -> Import.`;
       + 'Safety: do NOT write cookies, do NOT send the page’s data to third-party servers '
       + '(no exfiltration), and do NOT eval or inject remote code.\n'
       + 'Return ONLY the JavaScript body — no markdown fences, no function wrapper, no explanation.';
-    // The live, rendered DOM outline — gzipped + base64-encoded so it fits through
-    // the Cloudflare quick-tunnel (~57 KB raw compresses to ~6 KB). The gateway
-    // decompresses context.dom_gz into context.dom before passing to the agent.
-    let domSkeleton = '', domGz = '';
+    // The live, rendered DOM outline. The whole POST body is gzip-compressed at
+    // the transport level by gatewayAgent (Content-Encoding: gzip), so even 60+
+    // KB skeletons fit through the Cloudflare quick-tunnel comfortably.
+    let domSkeleton = '';
     try { domSkeleton = captureDomSkeleton(); } catch (e) { /* no DOM capture */ }
-    if (domSkeleton) {
-      try { domGz = await gzipBase64(domSkeleton); } catch (e) { /* send raw fallback */ }
-    }
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (landmarks.length ? 'Landmark elements:\n' + landmarks.join('\n') + '\n' : '')
@@ -3000,11 +2984,11 @@ Config -> Save/load story -> Import.`;
         : '')
       + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
       + '\n\nReturn only the JavaScript body.';
-    // Text mode (no schema) — gatewayAgent returns the raw body string.
-    // Send dom_gz (gzipped base64) — the gateway decompresses it into context.dom
-    // for the agent. Falls back to raw dom if gzip failed.
+    // Text mode (no schema) -- gatewayAgent returns the raw body string.
+    // DOM goes in context.dom; the whole POST body is gzip-compressed at the
+    // transport level inside gatewayAgent (Content-Encoding: gzip).
     const ctx = { host: host, title: document.title };
-    if (domGz) { ctx.dom_gz = domGz; } else if (domSkeleton) { ctx.dom = domSkeleton; }
+    if (domSkeleton) ctx.dom = domSkeleton;
     let text = await gatewayAgent(system + '\n\n' + prompt, null, ctx);
     text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
     // Unwrap an accidental function/arrow wrapper so we store a plain body.
@@ -3024,13 +3008,28 @@ Config -> Save/load story -> Import.`;
     if (!key) throw new Error('No gateway key set — add it in Config → Claude Gateway.');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 180000); // agent loops are slow
+    // Gzip the body at the transport level (Content-Encoding: gzip) so large
+    // payloads (e.g. 60 KB DOM skeletons in context.dom) fit through the
+    // Cloudflare quick-tunnel. The gateway accepts gzip and decompresses
+    // before parsing JSON.
+    var jsonStr = JSON.stringify({ task: task, schema: schema || null, context: context || null });
+    var fetchBody, contentEncoding;
+    try {
+      var cs = new CompressionStream('gzip');
+      var stream = new Response(new Blob([new TextEncoder().encode(jsonStr)]).stream().pipeThrough(cs));
+      fetchBody = await stream.arrayBuffer();
+      contentEncoding = 'gzip';
+    } catch (gzErr) {
+      // CompressionStream not available (very old browser) -- send uncompressed.
+      fetchBody = jsonStr;
+      contentEncoding = null;
+    }
+    var hdrs = { 'Content-Type': 'application/json', 'x-api-key': key };
+    if (contentEncoding) hdrs['Content-Encoding'] = contentEncoding;
     let r;
     try {
       r = await fetch(gatewayBaseUrl() + '/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
-        body: JSON.stringify({ task: task, schema: schema || null, context: context || null }),
-        signal: controller.signal
+        method: 'POST', headers: hdrs, body: fetchBody, signal: controller.signal
       });
     } catch (e) {
       clearTimeout(timer);
