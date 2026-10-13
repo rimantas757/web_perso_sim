@@ -1887,7 +1887,7 @@
     } else if (rule.action.type === 'richPopup') {
       // Describe-it → gateway designs HTML+CSS. SE can also hand-edit/paste.
       const intentField = el('div');
-      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the popup — the gateway designs brand-matched HTML + CSS (mention a form if you want one).' }));
+      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the popup — the gateway designs brand-matched HTML + CSS (mention a form if you want one). Verifies URLs as it goes — can take a bit.' }));
       const intentArea = el('textarea', { className: 'pp-code' });
       intentArea.style.height = '48px';
       intentArea.value = rule.action.intent || '';
@@ -1937,7 +1937,7 @@
       if (!rule.action.mode) rule.action.mode = 'replace';
 
       const intentField = el('div');
-      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the recommendations — the gateway drafts the cards; you edit image + text below. Replaces an existing card row on the page so it blends in.' }));
+      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the recommendations — the gateway drafts the cards and verifies the images resolve; you edit image + text below. Replaces an existing card row on the page so it blends in. Can take a bit.' }));
       const intentArea = el('textarea', { className: 'pp-code' });
       intentArea.style.height = '44px';
       intentArea.value = rule.action.intent || '';
@@ -2065,7 +2065,7 @@
     } else if (rule.action.type === 'runScript') {
       // Describe-it -> gateway writes the JS into the code box; SE reviews + Tests.
       const intentField = el('div');
-      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the change for the gateway to script (e.g. "replace the hero video with an image at <url> and stop the video").' }));
+      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the change for the gateway to script (e.g. "replace the hero video with an image at <url> and stop the video"). Verifies as it goes — can take a bit.' }));
       const intentArea = el('textarea', { className: 'pp-code' });
       intentArea.style.height = '44px';
       intentArea.value = rule.action.scriptIntent || '';
@@ -2790,11 +2790,11 @@ Config -> Save/load story -> Import.`;
       + (headings.length ? 'Visible headings: ' + headings.join(' | ') + '\n' : '')
       + 'Design this popup: ' + (intent && intent.trim() ? intent.trim() : 'a tasteful promotional offer with a clear call to action')
       + '\n\nReturn only the JSON object.';
-    const text = await gatewayComplete(prompt, system);
-    const cleaned = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
-    let parsed;
-    try { parsed = JSON.parse(cleaned); }
-    catch (e) { throw new Error('Gateway did not return valid JSON (see Advanced box to fix).'); }
+    const parsed = await gatewayAgent(
+      system + '\n\n' + prompt + '\nVerify that any URLs you include actually resolve.',
+      { html: 'string', css: 'string' },
+      { host: host, title: document.title }
+    );
     if (!parsed || typeof parsed.html !== 'string' || !parsed.html.trim()) {
       throw new Error('Gateway response had no html field.');
     }
@@ -2824,19 +2824,20 @@ Config -> Save/load story -> Import.`;
       + 'Return ONLY a JSON object: {"cards":[{"image":"<image URL or empty string>",'
       + '"lines":["line1","line2",...]}]}. Each card has 2-3 SHORT text lines (e.g. name, '
       + 'title/subtitle, one-line blurb). Match the length and tone of the sample card text. '
-      + 'Leave "image" an empty string unless you are certain of a real, hotlink-safe URL — '
-      + 'the user fills images from the page. No markup, no HTML.';
+      + 'For "image", find a public, hotlink-safe image matching the card and VERIFY the URL '
+      + 'actually resolves (HTTP 200, image content-type) before using it; if you cannot verify '
+      + 'one, leave it an empty string. No markup, no HTML.';
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (sample ? 'Sample existing card text (match this style/length): ' + sample + '\n' : '')
       + 'Number of cards: ' + count + '\n'
       + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page')
       + '\n\nReturn only the JSON object.';
-    const text = await gatewayComplete(prompt, system);
-    const cleaned = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
-    let parsed;
-    try { parsed = JSON.parse(cleaned); }
-    catch (e) { throw new Error('Gateway did not return valid JSON (see Advanced box to fix).'); }
+    const parsed = await gatewayAgent(
+      system + '\n\n' + prompt,
+      { cards: [{ image: 'string', lines: ['string'] }] },
+      { host: host, title: document.title, sample: sample, count: count, intent: intent || '' }
+    );
     const rawCards = Array.isArray(parsed && parsed.cards) ? parsed.cards : [];
     if (!rawCards.length) throw new Error('Gateway response had no cards.');
     const cards = rawCards.map(c => ({
@@ -2873,7 +2874,8 @@ Config -> Save/load story -> Import.`;
       + (landmarks.length ? 'Some elements on the page:\n' + landmarks.join('\n') + '\n' : '')
       + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
       + '\n\nReturn only the JavaScript body.';
-    let text = await gatewayComplete(prompt, system);
+    // Text mode (no schema) — gatewayAgent returns the raw body string.
+    let text = await gatewayAgent(system + '\n\n' + prompt, null, { host: host, title: document.title });
     text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
     // Unwrap an accidental function/arrow wrapper so we store a plain body.
     const fn = text.match(/^(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{([\s\S]*)\}\s*;?$/);
@@ -2910,6 +2912,14 @@ Config -> Save/load story -> Import.`;
     if (r.status === 401) throw new Error('Gateway rejected the key (401) — check / refresh it.');
     if (!r.ok) throw new Error('Gateway agent error ' + r.status);
     const j = await r.json().catch(() => ({}));
+    // Text mode: no schema requested -> return the raw text (fence-stripped) as a
+    // string (used for code bodies). Structured mode -> parsed JSON object.
+    if (!schema) {
+      const t = typeof j.text === 'string' ? j.text : (typeof j.result === 'string' ? j.result : '');
+      const stripped = t.trim().replace(/^```(?:js|javascript|json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      if (!stripped) throw new Error('Agent returned empty output.');
+      return stripped;
+    }
     if (j && j.result && typeof j.result === 'object') return j.result;
     if (typeof j.text === 'string') {
       const cleaned = j.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
@@ -2931,7 +2941,7 @@ Config -> Save/load story -> Import.`;
 
     const title = document.createElement('h3'); title.textContent = 'AI-author a config';
     const sub = document.createElement('div'); sub.className = 'pp-ai-sub';
-    sub.textContent = 'Describe what you want, copy the prompt into ChatGPT/Claude, then paste the JSON back.';
+    sub.textContent = 'Describe what you want — Generate with gateway drafts and verifies it (can take a bit), or copy the prompt into ChatGPT/Claude and paste the JSON back.';
 
     const intentLabel = document.createElement('label'); intentLabel.textContent = 'What should the personalisation do?';
     intentLabel.className = 'pp-ai-label';
@@ -2977,10 +2987,16 @@ Config -> Save/load story -> Import.`;
     closeBtn.addEventListener('click', close);
     backdrop.addEventListener('click', close);
 
-    // Parse a model's JSON reply (tolerating code fences) and import it.
+    // Parse a model's reply and import it. Accepts a raw string (code-fence
+    // tolerant) or an already-parsed object (e.g. from gatewayAgent).
     function parseAndApply(raw) {
-      const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
-      const parsed = JSON.parse(cleaned);
+      let parsed;
+      if (raw && typeof raw === 'object') {
+        parsed = raw;
+      } else {
+        const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+        parsed = JSON.parse(cleaned);
+      }
       const cfg = parsed && parsed._kind === 'web_perso_story' && parsed.config ? parsed.config : parsed;
       applyImportedConfig(cfg);
     }
@@ -2990,10 +3006,13 @@ Config -> Save/load story -> Import.`;
       const original = genBtn.textContent;
       genBtn.disabled = true; genBtn.textContent = 'Generating…';
       try {
-        const prompt = buildAiPrompt(intentArea.value);
-        const text = await gatewayComplete(prompt);
-        outArea.value = text; // show what came back, so the SE can inspect/tweak
-        parseAndApply(text);
+        const prompt = buildAiPrompt(intentArea.value)
+          + '\n\nVerify that any image or link URLs you include actually resolve (HTTP 200); replace broken ones.';
+        // Route through the agent so it can self-verify URLs. It returns the
+        // parsed config object directly (schema-shaped).
+        const out = await gatewayAgent(prompt, { _kind: 'string', config: 'object' }, { host: location.host });
+        outArea.value = JSON.stringify(out, null, 2); // show what came back, so the SE can inspect/tweak
+        parseAndApply(out);
         genBtn.textContent = 'Applied ✓';
         setTimeout(close, 700);
       } catch (err) {
