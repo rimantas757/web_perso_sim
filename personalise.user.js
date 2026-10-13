@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1445
+// @version      2026.10.13.1515
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -1406,6 +1406,11 @@
     if (ui.collapsed && config.avatarUrl) panel.classList.add('has-avatar');
     else panel.classList.remove('has-avatar');
 
+    // Preserve the body's scroll position across the full rebuild so adding a
+    // card, "Design with gateway", etc. don't jump the SE back to the top.
+    const prevBody = document.getElementById('pp-panel__body');
+    const prevScroll = prevBody ? prevBody.scrollTop : 0;
+
     clear(panel);
 
     // Header \u2014 same element for both expanded and collapsed; content swaps via CSS
@@ -1467,6 +1472,9 @@
     // Apply saved size + position after body is in DOM so offsetWidth/Height are correct
     applySizeToPanel(panel);
     applyPositionToPanel(panel);
+
+    // Restore the previous scroll position (clamped to the new content height).
+    if (prevScroll && !ui.collapsed) body.scrollTop = prevScroll;
 
     // Wiring \u2014 drag first so it can suppress the trailing click on move.
     // Header itself no longer toggles collapse; only the \u2212 / + buttons do,
