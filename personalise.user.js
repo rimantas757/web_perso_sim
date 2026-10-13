@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1405
+// @version      2026.10.13.1445
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -2044,6 +2044,37 @@
       const addCardBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '+ Add card' });
       addCardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.push({ image: '', lines: [] }); saveConfig(); renderPanel(); });
       wrap.appendChild(addCardBtn);
+
+      // Agent harness: check every card image resolves and find public
+      // replacements for broken/empty ones. Slow (tool-using loop) — a pre-demo
+      // "prepare the story" action, not a mid-demo click.
+      const verifyBtn = el('button', { className: 'pp-btn pp-btn--full', text: '🔎 Verify & fix images (agent)' });
+      wrap.appendChild(verifyBtn);
+      const verifyStatus = el('div', { className: 'pp-hint', text: gatewayKey() ? 'Checks each image resolves and finds public replacements for broken ones. Takes a while — run before the demo.' : 'Needs a gateway key (Claude Gateway section).' });
+      wrap.appendChild(verifyStatus);
+      verifyBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!gatewayKey()) { alert('No gateway key set — add it in the Claude Gateway section.'); return; }
+        if (!rule.action.cards.length) { verifyStatus.textContent = 'No cards to verify yet.'; return; }
+        const orig = verifyBtn.textContent; verifyBtn.disabled = true; verifyBtn.textContent = 'Verifying…';
+        verifyStatus.textContent = 'Verifying images… this can take up to a few minutes.';
+        const task = 'You are given a list of recommendation cards (each with an image URL and text lines). '
+          + 'For EACH card: check the image URL actually resolves (HTTP 200 and an image content-type). '
+          + 'If the image is missing, empty, or broken, find a public, hotlink-safe image that matches the '
+          + "card's text (lines) and replace the url. Keep the text lines unchanged. "
+          + 'Return the full cards array with every image a working URL.';
+        const CARDS_SCHEMA = { cards: [{ image: 'string(url)', lines: ['string'] }] };
+        try {
+          const out = await gatewayAgent(task, CARDS_SCHEMA, { intent: rule.action.intent || '', cards: rule.action.cards });
+          const cards = out && Array.isArray(out.cards) ? out.cards : (Array.isArray(out) ? out : null);
+          if (!cards) throw new Error('Agent returned no cards array.');
+          rule.action.cards = cards.map(c => ({ image: typeof c.image === 'string' ? c.image : '', lines: Array.isArray(c.lines) ? c.lines.map(String) : [] }));
+          saveConfig(); renderPanel();
+        } catch (err) {
+          verifyBtn.disabled = false; verifyBtn.textContent = orig;
+          verifyStatus.textContent = '✗ ' + err.message;
+        }
+      });
     } else if (rule.action.type === 'runScript') {
       // Describe-it -> gateway writes the JS into the code box; SE reviews + Tests.
       const intentField = el('div');
@@ -2862,6 +2893,42 @@ Config -> Save/load story -> Import.`;
     if (fn) text = fn[1].trim();
     if (!text) throw new Error('Gateway returned an empty script.');
     return text;
+  }
+
+  // General agentic call: run the gateway's Claude Code worker as a tool-using
+  // agent (constrained tools — fetch/search, no shell) on a natural-language
+  // task, looping to completion. For slow pre-demo "research + verify" work
+  // (e.g. check every rec image resolves and fix broken ones). Returns parsed
+  // JSON (j.result, else fence-tolerant parse of j.text). Long timeout.
+  async function gatewayAgent(task, schema, context) {
+    const key = gatewayKey();
+    if (!key) throw new Error('No gateway key set — add it in Config → Claude Gateway.');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 180000); // agent loops are slow
+    let r;
+    try {
+      r = await fetch(gatewayBaseUrl() + '/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({ task: task, schema: schema || null, context: context || null }),
+        signal: controller.signal
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      if (e && e.name === 'AbortError') throw new Error('Agent timed out (over 3 min).');
+      throw new Error('Gateway at ' + gatewayBaseUrl() + ' ' + fetchFailureHint());
+    }
+    clearTimeout(timer);
+    if (r.status === 404) throw new Error('Gateway has no /agent endpoint — see gateway-agent-patch.md.');
+    if (r.status === 401) throw new Error('Gateway rejected the key (401) — check / refresh it.');
+    if (!r.ok) throw new Error('Gateway agent error ' + r.status);
+    const j = await r.json().catch(() => ({}));
+    if (j && j.result && typeof j.result === 'object') return j.result;
+    if (typeof j.text === 'string') {
+      const cleaned = j.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+      try { return JSON.parse(cleaned); } catch (e) { throw new Error('Agent returned non-JSON output.'); }
+    }
+    throw new Error('Agent returned no usable result.');
   }
 
   function openAiPromptModal() {
