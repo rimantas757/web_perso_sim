@@ -35,6 +35,9 @@ const meta = `// ==UserScript==
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      localhost
+// @connect      127.0.0.1
 // @updateURL    ${base}/personalise.user.js
 // @downloadURL  ${base}/personalise.user.js
 // @supportURL   https://github.com/rimantas757/web_perso_sim/issues
