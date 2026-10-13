@@ -2878,7 +2878,7 @@ Config -> Save/load story -> Import.`;
       + 'framework hydration, and disrupts responsive behavior.\n'
       + '- Handle all image mechanisms. When swapping an image, update src AND clear srcset, '
       + 'data-src, data-srcset, sizes, and any lazy-loading class/attribute so the browser actually '
-      + 'displays the new image. Check for <picture>/<source> wrappers. Preserve responsive behavior.\n'
+      + 'displays the new image. Check for <picture>/<source> wrappers and update those too. The lazy-loader may RESTORE the original image after you set src -- also remove lazy-loading classes (lazy, lazyload) and set loading=eager to prevent this.\n'
       + '- Scope to specific containers. Target elements inside their section/container, not globally. '
       + 'Favor stable ids, data attributes, and semantic BEM-style class selectors over fragile '
       + 'positional or wildcard selectors like [class*="card"].\n'
