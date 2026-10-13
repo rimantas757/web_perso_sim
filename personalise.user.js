@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1650
+// @version      2026.10.13.1711
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
