@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1242
+// @version      2026.10.13.1317
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -288,11 +288,32 @@
     return m ? m[2] : '';
   }
 
+  // First URL out of a srcset string ("a.jpg 350w, b.jpg 700w" -> "a.jpg").
+  function firstFromSrcset(ss) {
+    if (!ss) return '';
+    const first = ss.split(',')[0].trim().split(/\s+/)[0];
+    return first || '';
+  }
+  // Resolve the real image URL for an <img>, tolerating lazy-loaders: many
+  // sites keep the actual URL in data-src/data-srcset and only populate src on
+  // scroll. We read those NOW so the gallery shows the true image without the
+  // user having to scroll it into view first.
+  function resolveImgSrc(img) {
+    const cur = img.currentSrc || img.getAttribute('src') || '';
+    // A 1x1 / data: placeholder or empty src means it hasn't lazy-loaded yet.
+    const placeholderish = !cur || /^data:/.test(cur) || /\b(blank|placeholder|spacer|1x1)\b/i.test(cur);
+    if (!placeholderish) return cur;
+    return img.getAttribute('data-src')
+      || firstFromSrcset(img.getAttribute('data-srcset'))
+      || firstFromSrcset(img.getAttribute('srcset'))
+      || cur;
+  }
+
   // Enumerate every image-bearing element on the page for the visual gallery:
-  // <img> elements and elements carrying a background-image. Skips our own
-  // panel/overlays, tiny or hidden images, and dedupes by element. Returns
-  // [{ el, kind:'img'|'bg', src, w, h }], largest rendered area first (so the
-  // hero floats to the top).
+  // <img> (resolving lazy data-src), elements with a background-image, and
+  // <video poster> (common for hero banners). Skips our own panel/overlays,
+  // tiny or hidden images, dedupes by element. Returns
+  // [{ el, kind:'img'|'bg'|'video', src, w, h }], largest rendered area first.
   function collectPageImages() {
     const out = [];
     const seen = new Set();
@@ -301,17 +322,20 @@
       if (!src || seen.has(el)) return;
       if (el.closest('#pp-panel, #pp-pick-overlay, #pp-pick-hint, #pp-ai-modal, #pp-image-gallery')) return;
       const r = el.getBoundingClientRect();
-      // Fall back to natural size for <img> not yet laid out.
-      const w = Math.round(r.width) || (el.naturalWidth || 0);
-      const h = Math.round(r.height) || (el.naturalHeight || 0);
+      // Fall back to natural/attribute size for elements not yet laid out.
+      const w = Math.round(r.width) || (el.naturalWidth || parseInt(el.getAttribute('width'), 10) || 0);
+      const h = Math.round(r.height) || (el.naturalHeight || parseInt(el.getAttribute('height'), 10) || 0);
       if (w < MIN || h < MIN) return;
-      if (getComputedStyle(el).visibility === 'hidden' || getComputedStyle(el).display === 'none') return;
+      const cs = getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none') return;
       seen.add(el);
       out.push({ el, kind, src, w, h });
     }
-    document.querySelectorAll('img').forEach(img => consider(img, 'img', img.currentSrc || img.src));
+    document.querySelectorAll('img').forEach(img => consider(img, 'img', resolveImgSrc(img)));
+    // Video heroes: use the poster frame as the thumbnail/target.
+    document.querySelectorAll('video[poster]').forEach(v => consider(v, 'video', v.getAttribute('poster')));
     document.querySelectorAll('*').forEach(node => {
-      if (node.tagName === 'IMG') return;
+      if (node.tagName === 'IMG' || node.tagName === 'VIDEO') return;
       if (hasBackgroundImage(node)) consider(node, 'bg', bgImageUrl(node));
     });
     out.sort((a, b) => (b.w * b.h) - (a.w * a.h));
@@ -483,7 +507,17 @@
       if (!image) { console.warn('[personalise] swapImage missing image'); return false; }
       if (el.tagName === 'IMG') {
         el.src = image;
+        // Clear srcset AND lazy-loader attrs so neither re-overrides our swap.
         if (el.srcset) el.removeAttribute('srcset');
+        el.removeAttribute('data-src'); el.removeAttribute('data-srcset');
+        el.classList.remove('lazy');
+      } else if (el.tagName === 'VIDEO') {
+        // Hero video: swap the poster, and lay the image over the video so the
+        // change is visible even if the video is playing.
+        el.setAttribute('poster', image);
+        el.style.backgroundImage = `url('${image}')`;
+        el.style.backgroundSize = el.style.backgroundSize || 'cover';
+        el.style.backgroundPosition = el.style.backgroundPosition || 'center';
       } else {
         el.style.backgroundImage = `url('${image}')`;
         el.style.backgroundSize = el.style.backgroundSize || 'cover';
@@ -1128,7 +1162,8 @@
         const thumb = document.createElement('div'); thumb.className = 'pp-ig-thumb';
         thumb.style.backgroundImage = `url('${im.src.replace(/'/g, "\\'")}')`;
         const meta = document.createElement('div'); meta.className = 'pp-ig-meta';
-        meta.textContent = `${im.w}×${im.h}${im.kind === 'bg' ? ' · bg' : ''}` + (i === 0 ? ' · largest' : '');
+        const kindTag = im.kind === 'bg' ? ' · bg' : (im.kind === 'video' ? ' · video' : '');
+        meta.textContent = `${im.w}×${im.h}${kindTag}` + (i === 0 ? ' · largest' : '');
         cell.appendChild(thumb); cell.appendChild(meta);
         cell.title = im.src;
         // Hover highlights the real element on the page so the SE can confirm.
