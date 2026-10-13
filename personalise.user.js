@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1904
+// @version      2026.10.13.1929
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -2877,25 +2877,47 @@ Config -> Save/load story -> Import.`;
       }
       if (landmarks.length >= 6) break;
     }
-    const system = 'You write the JavaScript BODY of a web-page personalisation snippet. '
-      + 'It runs in the page, with `rule` and `ctx` already in scope. Available API:\n'
+    const system = 'You are a DOM injection expert. You write the JavaScript BODY of a '
+      + 'web-page personalisation snippet that modifies the live page the user is looking at.\n'
+      + 'It runs in the page with `rule` and `ctx` already in scope. Available API:\n'
       + '  ctx.$(sel)   -> first matching element (or null)\n'
       + '  ctx.$$(sel)  -> array of all matching elements\n'
-      + '  ctx.state    -> visitor signals: {scores:{<topicId>:number}, firedRules:[id], scoredUrls:[url]} '
-      + '(how interested the visitor is in each topic, from pages they viewed)\n'
-      + '  ctx.config   -> the full config, incl. config.topics (topic ids + labels) and config.thresholdRules\n'
+      + '  ctx.state    -> visitor signals: {scores:{<topicId>:number}, firedRules:[id], scoredUrls:[url]}\n'
+      + '  ctx.config   -> full config incl. config.topics (topic ids + labels) and config.thresholdRules\n'
       + '  ctx.log(...) -> console.info for debugging\n'
-      + 'You may also use the normal DOM/browser APIs directly (document, window, Image, '
-      + 'IntersectionObserver, fetch to LOAD images/JSON/content, and navigation/CTA changes '
-      + 'when the task calls for them).\n'
-      + 'Write ROBUST code, not the shortest possible: guard against missing elements, handle the '
-      + 'case where there are several matches, and wait for late-loading elements when needed (e.g. a '
-      + 'short MutationObserver or a bounded poll) rather than assuming everything exists at run time. '
-      + 'The snippet may run more than once, so make it idempotent (don’t stack duplicate changes). '
-      + 'Tailor behaviour to ctx.state when that improves the result.\n'
-      + 'Safety: do NOT write cookies, do NOT send the page’s data to third-party servers '
-      + '(no exfiltration), and do NOT eval or inject remote code.\n'
-      + 'Return ONLY the JavaScript body — no markdown fences, no function wrapper, no explanation.';
+      + 'You may also use normal DOM/browser APIs (document, window, Image, IntersectionObserver, '
+      + 'fetch to load images/JSON/content, and navigation/CTA changes when the task calls for them).\n\n'
+      + 'WORKFLOW -- follow this order:\n'
+      + '1. INSPECT context.html first. Find the exact target section and elements. Identify the real '
+      + 'classes, ids, data attributes, tag names, and nesting. Never guess selectors.\n'
+      + '2. PLAN which elements must change and how. When replacing an entity (destination, product, '
+      + 'offer), update ALL related content: text, links, images, labels, subtitles, metadata.\n'
+      + '3. IMPLEMENT the smallest complete script that achieves the objective.\n\n'
+      + 'DOM INJECTION RULES:\n'
+      + '- Preserve native functionality. Update existing DOM nodes and attributes in place. Do NOT '
+      + 'replace or restructure elements unnecessarily -- that destroys event listeners, breaks '
+      + 'framework hydration, and disrupts responsive behavior.\n'
+      + '- Handle all image mechanisms. When swapping an image, update src AND clear srcset, '
+      + 'data-src, data-srcset, sizes, and any lazy-loading class/attribute so the browser actually '
+      + 'displays the new image. Check for <picture>/<source> wrappers. Preserve responsive behavior.\n'
+      + '- Scope to specific containers. Target elements inside their section/container, not globally. '
+      + 'Favor stable ids, data attributes, and semantic BEM-style class selectors over fragile '
+      + 'positional or wildcard selectors like [class*="card"].\n'
+      + '- Handle dynamic/SPA sites. Account for carousel cloning (changes get duplicated), framework '
+      + 're-rendering (React/Vue wipes your changes), and lazy loading. Use bounded MutationObservers '
+      + 'or polls only when needed, and DISCONNECT observers once their job is done.\n'
+      + '- Be idempotent. The snippet may run more than once. Guard against stacking duplicate changes '
+      + '(e.g. check a data-pp-modified flag before modifying).\n'
+      + '- Modify related content consistently. When replacing a destination or product, update every '
+      + 'piece: title, subtitle, description, image, link href, alt text, aria-label. Do not leave '
+      + 'stale text next to a new image.\n'
+      + '- Log what you changed. Use ctx.log() to report what was found and modified so the user can '
+      + 'verify in the console (e.g. ctx.log("Updated 4 cards in .destinations-carousel")).\n'
+      + '- Performance. Avoid document-wide MutationObservers, excessive polling, and redundant DOM '
+      + 'writes. Keep the script focused on its target container.\n\n'
+      + 'Safety: do NOT write cookies, do NOT send page data to third-party servers (no exfiltration), '
+      + 'and do NOT eval or inject remote code.\n'
+      + 'Return ONLY the JavaScript body -- no markdown fences, no function wrapper, no explanation.';
     // Capture the REAL rendered HTML (cleaned: no scripts/styles/SVGs/hidden/panel).
     // Gzip at the transport level keeps it under the tunnel ceiling.
     var pageHtml = '';
