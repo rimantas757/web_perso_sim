@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1037
+// @version      2026.10.13.1049
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -1509,82 +1509,34 @@
 
     // Action-specific fields
     if (rule.action.type === 'swapImage') {
-      // Named-slot picker: the primary, selector-free way to choose what to
-      // replace. Falls back to a raw CSS selector when the page has no slots
-      // or the SE picks "Custom selector...".
-      const slots = discoverSlots();
-      const CUSTOM = '__custom__';
-      // A rule is in "custom" mode if it already has a selector and no slot, or
-      // its slot no longer exists on this page.
-      const slotNamesHere = new Set(slots.map(s => s.name));
-      let usingCustom = !rule.action.slot || !slotNamesHere.has(rule.action.slot);
+      // Browse is the primary, works-on-any-site way to pick the image to
+      // replace; the raw selector + Pick stay as a manual fallback. (The engine
+      // still honours a `slot` on saved configs; we just don't author it here.)
+      const browseField = el('div', { className: 'pp-thr-field' });
+      browseField.appendChild(el('label', { text: 'Replace' }));
+      const browseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '🖼 Browse page images' });
+      browseBtn.title = 'Pick the image to replace from a gallery of the page’s images';
+      browseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+      });
+      browseField.appendChild(browseBtn);
+      wrap.appendChild(browseField);
 
-      if (slots.length) {
-        const slotField = el('div', { className: 'pp-thr-field' });
-        slotField.appendChild(el('label', { text: 'Replace' }));
-        const slotSel = document.createElement('select');
-        const ph = document.createElement('option');
-        ph.value = ''; ph.textContent = slots.length ? 'Choose a slot…' : '(no slots on page)';
-        ph.disabled = true; slotSel.appendChild(ph);
-        for (const s of slots) {
-          const o = document.createElement('option');
-          o.value = s.name; o.textContent = s.label + (s.kind === 'section' ? ' (section)' : '');
-          if (!usingCustom && rule.action.slot === s.name) o.selected = true;
-          slotSel.appendChild(o);
-        }
-        const customOpt = document.createElement('option');
-        customOpt.value = CUSTOM; customOpt.textContent = 'Custom selector…';
-        if (usingCustom) customOpt.selected = true;
-        slotSel.appendChild(customOpt);
-        if (usingCustom && !rule.action.selector) slotSel.value = '';
-        slotSel.addEventListener('change', () => {
-          if (slotSel.value === CUSTOM) {
-            delete rule.action.slot;
-          } else if (slotSel.value) {
-            rule.action.slot = slotSel.value;
-            delete rule.action.selector;
-          }
-          saveConfig(); renderPanel();
-        });
-        slotField.appendChild(slotSel);
-        wrap.appendChild(slotField);
-
-        // Quick path: browse the page's images even while a slot is selected.
-        const browseField = el('div', { className: 'pp-thr-field' });
-        browseField.appendChild(el('label', { text: '' }));
-        const browseSlotBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '🖼 Browse page images' });
-        browseSlotBtn.title = 'Pick the image to replace from a gallery of the page’s images';
-        browseSlotBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
-        });
-        browseField.appendChild(browseSlotBtn);
-        wrap.appendChild(browseField);
-      }
-
-      // Raw selector + Pick — shown only in custom mode (or when no slots exist).
-      if (usingCustom) {
-        const selField = el('div', { className: 'pp-thr-field' });
-        selField.appendChild(el('label', { text: 'Target' }));
-        const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: '.hero, #banner, img.foo' });
-        selInput.addEventListener('change', () => { rule.action.selector = selInput.value; delete rule.action.slot; saveConfig(); });
-        const browseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Browse' });
-        browseBtn.title = 'Pick the image to replace from a gallery of the page’s images';
-        browseBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
-        });
-        const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
-        pickBtn.title = 'Click an element on the page to capture its selector';
-        pickBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          startPick((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
-        });
-        selField.appendChild(selInput);
-        selField.appendChild(browseBtn);
-        selField.appendChild(pickBtn);
-        wrap.appendChild(selField);
-      }
+      // Raw selector + Pick — manual fallback for a target the gallery can't show.
+      const selField = el('div', { className: 'pp-thr-field' });
+      selField.appendChild(el('label', { text: 'Target' }));
+      const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: rule.action.slot ? ('slot: ' + rule.action.slot) : '.hero, #banner, img.foo' });
+      selInput.addEventListener('change', () => { rule.action.selector = selInput.value; delete rule.action.slot; saveConfig(); });
+      const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
+      pickBtn.title = 'Click an element on the page to capture its selector';
+      pickBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startPick((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+      });
+      selField.appendChild(selInput);
+      selField.appendChild(pickBtn);
+      wrap.appendChild(selField);
 
       const imgField = el('div', { className: 'pp-thr-field' });
       imgField.appendChild(el('label', { text: 'Image URL' }));
