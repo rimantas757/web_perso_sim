@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1537
+// @version      2026.10.13.1650
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -419,6 +419,90 @@
     if (rule.action.slot) return resolveSlotTarget(rule.action.slot, 'image');
     if (rule.action.selector) return document.querySelector(rule.action.selector);
     return null;
+  }
+
+  // -------------------- DOM skeleton (for gatewayDesignScript) --------------
+  // Serialize the LIVE, rendered DOM into a compact, indented outline the agent
+  // can read to pick real selectors — tags + id + classes + data-* + a few key
+  // attrs + short own-text, plus a little styling signal on structural nodes.
+  // We strip the noise that bloats outerHTML without helping selection: scripts,
+  // styles, SVG internals, comments, our own panel, and long/base64 values.
+  // Uncapped by design (see decision) — the whole page skeleton goes.
+  function captureDomSkeleton() {
+    const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'LINK', 'META', 'SVG', 'CANVAS', 'IFRAME', 'HEAD']);
+    const KEEP_ATTRS = ['src', 'alt', 'href', 'title', 'role', 'aria-label', 'placeholder', 'type', 'name', 'value'];
+    // Key computed styles that convey look without dumping full CSS.
+    const STYLE_KEYS = ['display', 'color', 'background-color', 'background-image', 'font-family', 'font-size', 'font-weight', 'border-radius', 'text-align'];
+    const out = [];
+
+    function shortText(node) {
+      // Own text only (direct text-node children), collapsed + trimmed.
+      let t = '';
+      for (const n of node.childNodes) {
+        if (n.nodeType === 3) t += n.nodeValue;
+      }
+      t = t.replace(/\s+/g, ' ').trim();
+      return t.length > 120 ? t.slice(0, 117) + '…' : t;
+    }
+    function attrStr(elm) {
+      const parts = [];
+      const id = elm.id ? '#' + elm.id : '';
+      const cls = (elm.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).join('.');
+      let head = elm.tagName.toLowerCase() + id + (cls ? '.' + cls : '');
+      for (const a of KEEP_ATTRS) {
+        if (!elm.hasAttribute(a)) continue;
+        let v = elm.getAttribute(a) || '';
+        if (/^data:/.test(v)) v = 'data:…';                 // drop base64 blobs
+        if (v.length > 100) v = v.slice(0, 97) + '…';
+        parts.push(a + '="' + v + '"');
+      }
+      for (const a of elm.attributes) {
+        if (a.name.indexOf('data-') === 0) {
+          let v = a.value || '';
+          if (v.length > 60) v = v.slice(0, 57) + '…';
+          parts.push(a.name + '="' + v + '"');
+        }
+      }
+      return head + (parts.length ? ' [' + parts.join(' ') + ']' : '');
+    }
+    function styleStr(elm) {
+      let cs;
+      try { cs = getComputedStyle(elm); } catch (e) { return ''; }
+      const bits = [];
+      for (const k of STYLE_KEYS) {
+        let v = cs.getPropertyValue(k);
+        if (!v) continue;
+        if (k === 'background-image' && v === 'none') continue;
+        if (k === 'background-color' && (v === 'rgba(0, 0, 0, 0)' || v === 'transparent')) continue;
+        if (k === 'display' && v === 'block') continue;         // the default, skip noise
+        if (k === 'text-align' && (v === 'start' || v === 'left')) continue;
+        if (v.length > 60) v = v.slice(0, 57) + '…';
+        bits.push(k + ':' + v);
+      }
+      return bits.length ? '  {' + bits.join('; ') + '}' : '';
+    }
+    function visible(elm) {
+      // Skip elements that aren't rendered — they'd mislead selection.
+      try {
+        const cs = getComputedStyle(elm);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      } catch (e) { /* detached — treat as visible */ }
+      return true;
+    }
+    function walk(node, depth) {
+      if (node.nodeType !== 1) return;
+      if (SKIP_TAGS.has(node.tagName)) return;
+      if (node.id === 'pp-panel' || node.id === 'pp-ai-modal' ||
+          (node.className && typeof node.className === 'string' && /\bpp-/.test(node.className))) return; // our own UI
+      if (!visible(node)) return;
+      const indent = '  '.repeat(depth);
+      const txt = shortText(node);
+      out.push(indent + attrStr(node) + (txt ? '  “' + txt + '”' : '') + styleStr(node));
+      for (const child of node.children) walk(child, depth + 1);
+    }
+    const body = document.body;
+    if (body) for (const child of body.children) walk(child, 0);
+    return out.join('\n');
   }
 
   // -------------------- HTML sanitizer (for richPopup) --------------------
@@ -2115,7 +2199,7 @@
       });
 
       const codeField = el('div');
-      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.log(\u2026). Review, then Test now.' });
+      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs in the page with `rule` and `ctx` in scope \u2014 ctx.$(sel), ctx.$$(sel), ctx.state (visitor topic scores), ctx.config, ctx.log(\u2026). Normal DOM/fetch APIs are available too. Review, then Test now.' });
       const codeArea = el('textarea', { className: 'pp-code' });
       codeArea.value = rule.action.code || '';
       codeArea.spellcheck = false;
@@ -2629,7 +2713,7 @@ match the site's styling, or injects a generic strip if none exists):
 
 Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/popup can't cover it):
 { "type": "runScript",
-  "code": "<JS body. \`rule\` and \`ctx\` are in scope. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> read-only scores/firedRules\n  ctx.log(...) -> console.info>"
+  "code": "<JS body. \`rule\` and \`ctx\` are in scope; normal DOM/fetch APIs too. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> visitor signals {scores, firedRules, scoredUrls}\n  ctx.config -> full config (topics, rules)\n  ctx.log(...) -> console.info. Write robust, idempotent code; guard missing elements; no cookie writes or sending page data to third parties>"
 }
 
 AUTHORING RULES
@@ -2885,18 +2969,48 @@ Config -> Save/load story -> Import.`;
       }
       if (landmarks.length >= 6) break;
     }
-    const system = 'You write a short JavaScript snippet BODY for a web-page personalisation engine. '
-      + 'It runs with `rule` and `ctx` in scope. Helpers: ctx.$(sel) -> first element, '
-      + 'ctx.$$(sel) -> all elements (array), ctx.state, ctx.config, ctx.log(...). '
-      + 'Return ONLY the JS body: no markdown fences, no function wrapper, no explanation. '
-      + 'Guard against missing elements. Do NOT use fetch/XHR, navigation, localStorage, or cookies.';
+    const system = 'You write the JavaScript BODY of a web-page personalisation snippet. '
+      + 'It runs in the page, with `rule` and `ctx` already in scope. Available API:\n'
+      + '  ctx.$(sel)   -> first matching element (or null)\n'
+      + '  ctx.$$(sel)  -> array of all matching elements\n'
+      + '  ctx.state    -> visitor signals: {scores:{<topicId>:number}, firedRules:[id], scoredUrls:[url]} '
+      + '(how interested the visitor is in each topic, from pages they viewed)\n'
+      + '  ctx.config   -> the full config, incl. config.topics (topic ids + labels) and config.thresholdRules\n'
+      + '  ctx.log(...) -> console.info for debugging\n'
+      + 'You may also use the normal DOM/browser APIs directly (document, window, Image, '
+      + 'IntersectionObserver, fetch to LOAD images/JSON/content, and navigation/CTA changes '
+      + 'when the task calls for them).\n'
+      + 'Write ROBUST code, not the shortest possible: guard against missing elements, handle the '
+      + 'case where there are several matches, and wait for late-loading elements when needed (e.g. a '
+      + 'short MutationObserver or a bounded poll) rather than assuming everything exists at run time. '
+      + 'The snippet may run more than once, so make it idempotent (don’t stack duplicate changes). '
+      + 'Tailor behaviour to ctx.state when that improves the result.\n'
+      + 'Safety: do NOT write cookies, do NOT send the page’s data to third-party servers '
+      + '(no exfiltration), and do NOT eval or inject remote code.\n'
+      + 'Return ONLY the JavaScript body — no markdown fences, no function wrapper, no explanation.';
+    // The live, rendered DOM outline. The whole POST body is gzip-compressed at
+    // the transport level by gatewayAgent (Content-Encoding: gzip), so even 60+
+    // KB skeletons fit through the Cloudflare quick-tunnel comfortably.
+    let domSkeleton = '';
+    try { domSkeleton = captureDomSkeleton(); } catch (e) { /* no DOM capture */ }
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
-      + (landmarks.length ? 'Some elements on the page:\n' + landmarks.join('\n') + '\n' : '')
+      + (landmarks.length ? 'Landmark elements:\n' + landmarks.join('\n') + '\n' : '')
+      + (domSkeleton
+        ? 'The page’s LIVE rendered DOM structure is provided in context.dom '
+          + '(tag#id.class [attrs] “own text” {key styles}). '
+          + 'Base every selector on this actual structure — do not guess tag/class names, '
+          + 'and do not match an element by whole-page textContent (that resolves to <html>); '
+          + 'instead target the specific element/class shown there.\n'
+        : '')
       + 'Change to make: ' + (intent && intent.trim() ? intent.trim() : 'describe a DOM change')
       + '\n\nReturn only the JavaScript body.';
-    // Text mode (no schema) — gatewayAgent returns the raw body string.
-    let text = await gatewayAgent(system + '\n\n' + prompt, null, { host: host, title: document.title });
+    // Text mode (no schema) -- gatewayAgent returns the raw body string.
+    // DOM goes in context.dom; the whole POST body is gzip-compressed at the
+    // transport level inside gatewayAgent (Content-Encoding: gzip).
+    const ctx = { host: host, title: document.title };
+    if (domSkeleton) ctx.dom = domSkeleton;
+    let text = await gatewayAgent(system + '\n\n' + prompt, null, ctx);
     text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
     // Unwrap an accidental function/arrow wrapper so we store a plain body.
     const fn = text.match(/^(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{([\s\S]*)\}\s*;?$/);
@@ -2915,13 +3029,28 @@ Config -> Save/load story -> Import.`;
     if (!key) throw new Error('No gateway key set — add it in Config → Claude Gateway.');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 180000); // agent loops are slow
+    // Gzip the body at the transport level (Content-Encoding: gzip) so large
+    // payloads (e.g. 60 KB DOM skeletons in context.dom) fit through the
+    // Cloudflare quick-tunnel. The gateway accepts gzip and decompresses
+    // before parsing JSON.
+    var jsonStr = JSON.stringify({ task: task, schema: schema || null, context: context || null });
+    var fetchBody, contentEncoding;
+    try {
+      var cs = new CompressionStream('gzip');
+      var stream = new Response(new Blob([new TextEncoder().encode(jsonStr)]).stream().pipeThrough(cs));
+      fetchBody = await stream.arrayBuffer();
+      contentEncoding = 'gzip';
+    } catch (gzErr) {
+      // CompressionStream not available (very old browser) -- send uncompressed.
+      fetchBody = jsonStr;
+      contentEncoding = null;
+    }
+    var hdrs = { 'Content-Type': 'application/json', 'x-api-key': key };
+    if (contentEncoding) hdrs['Content-Encoding'] = contentEncoding;
     let r;
     try {
       r = await fetch(gatewayBaseUrl() + '/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
-        body: JSON.stringify({ task: task, schema: schema || null, context: context || null }),
-        signal: controller.signal
+        method: 'POST', headers: hdrs, body: fetchBody, signal: controller.signal
       });
     } catch (e) {
       clearTimeout(timer);
