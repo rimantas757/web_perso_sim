@@ -27,7 +27,7 @@ const meta = `// ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    ${base}
 // @version      ${version}
-// @description  Client-side personalisation engine — tag pages, score topics, fire swap/popup/script actions.
+// @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
 // @run-at       document-start

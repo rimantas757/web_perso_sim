@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.08.24.1604
-// @description  Client-side personalisation engine — tag pages, score topics, fire swap/popup/script actions.
+// @version      2026.10.13.1023
+// @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
 // @run-at       document-start
@@ -120,6 +120,9 @@
   if (!config) { config = defaultConfig(); saveJSON(CONFIG_STORAGE_KEY, config); }
   let state = loadJSON(STATE_STORAGE_KEY, { scores: {}, firedRules: [], scoredUrls: [] });
   let ui = loadJSON(UI_STORAGE_KEY, { mode: 'runtime', collapsed: false });
+  // Claude Gateway connection (per-SE machine settings — kept in `ui` so they
+  // are NOT exported with a story and NOT clobbered by importing one).
+  if (!ui.gateway) ui.gateway = { url: 'http://localhost:4000', key: '' };
 
   function saveConfig() { saveJSON(CONFIG_STORAGE_KEY, config); }
   function saveState() { saveJSON(STATE_STORAGE_KEY, state); }
@@ -180,11 +183,118 @@
     };
   }
 
+  // -------------------- Named personalization slots --------------------
+  // Sites can expose stable, friendly targets with data-personalise="<name>"
+  // (text/image elements) or data-personalise-section="<name>" (whole sections).
+  // The SE picks these by name in the editor instead of typing a CSS selector.
+  const SLOT_ATTR = 'data-personalise';
+  const SLOT_SECTION_ATTR = 'data-personalise-section';
+
+  // Discover every slot on the current page, de-duped by name, in DOM order.
+  // Returns [{ name, label, kind: 'element'|'section', el }].
+  function discoverSlots() {
+    const out = [];
+    const seen = new Set();
+    const nodes = document.querySelectorAll(`[${SLOT_ATTR}],[${SLOT_SECTION_ATTR}]`);
+    for (const el of nodes) {
+      const sectionName = el.getAttribute(SLOT_SECTION_ATTR);
+      const elementName = el.getAttribute(SLOT_ATTR);
+      const name = elementName || sectionName;
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, label: humanizeSlot(name), kind: elementName ? 'element' : 'section', el });
+    }
+    return out;
+  }
+
+  function humanizeSlot(name) {
+    return String(name).replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function findSlotEl(name) {
+    if (!name) return null;
+    return document.querySelector(
+      `[${SLOT_ATTR}="${CSS.escape(name)}"],[${SLOT_SECTION_ATTR}="${CSS.escape(name)}"]`
+    );
+  }
+
+  function hasBackgroundImage(el) {
+    if (!(el instanceof Element)) return false;
+    const bg = getComputedStyle(el).backgroundImage;
+    return bg && bg !== 'none';
+  }
+
+  // Extract the first url(...) from a CSS background-image value.
+  function bgImageUrl(el) {
+    const bg = getComputedStyle(el).backgroundImage || '';
+    const m = bg.match(/url\((['"]?)(.*?)\1\)/i);
+    return m ? m[2] : '';
+  }
+
+  // Enumerate every image-bearing element on the page for the visual gallery:
+  // <img> elements and elements carrying a background-image. Skips our own
+  // panel/overlays, tiny or hidden images, and dedupes by element. Returns
+  // [{ el, kind:'img'|'bg', src, w, h }], largest rendered area first (so the
+  // hero floats to the top).
+  function collectPageImages() {
+    const out = [];
+    const seen = new Set();
+    const MIN = 24; // px — ignore icons/tracking pixels
+    function consider(el, kind, src) {
+      if (!src || seen.has(el)) return;
+      if (el.closest('#pp-panel, #pp-pick-overlay, #pp-pick-hint, #pp-ai-modal, #pp-image-gallery')) return;
+      const r = el.getBoundingClientRect();
+      // Fall back to natural size for <img> not yet laid out.
+      const w = Math.round(r.width) || (el.naturalWidth || 0);
+      const h = Math.round(r.height) || (el.naturalHeight || 0);
+      if (w < MIN || h < MIN) return;
+      if (getComputedStyle(el).visibility === 'hidden' || getComputedStyle(el).display === 'none') return;
+      seen.add(el);
+      out.push({ el, kind, src, w, h });
+    }
+    document.querySelectorAll('img').forEach(img => consider(img, 'img', img.currentSrc || img.src));
+    document.querySelectorAll('*').forEach(node => {
+      if (node.tagName === 'IMG') return;
+      if (hasBackgroundImage(node)) consider(node, 'bg', bgImageUrl(node));
+    });
+    out.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+    return out;
+  }
+
+  // Resolve a slot name to the concrete element to act on. `want` is 'text' or
+  // 'image'. For images we handle the common pattern where the slot attribute
+  // sits on a text node (h1/p) while the hero media is a sibling: search the
+  // enclosing section for an <img> or a background-image element.
+  function resolveSlotTarget(name, want) {
+    const anchor = findSlotEl(name);
+    if (!anchor) return null;
+    if (want !== 'image') return anchor;
+    // The attribute element itself carries the image?
+    if (anchor.tagName === 'IMG' || hasBackgroundImage(anchor)) return anchor;
+    // Otherwise look within the enclosing section for the hero media.
+    const scope = anchor.closest(`[${SLOT_SECTION_ATTR}], section`) || anchor.parentElement || document.body;
+    const media = scope.querySelector('[class*="__media"] img, [class*="__media"], img');
+    if (media) return media;
+    const bgEl = Array.from(scope.querySelectorAll('*')).find(hasBackgroundImage);
+    return bgEl || anchor;
+  }
+
+  // Resolve the element a swapImage rule targets: slot wins over raw selector.
+  function swapImageTargetEl(rule) {
+    if (rule.action.slot) return resolveSlotTarget(rule.action.slot, 'image');
+    if (rule.action.selector) return document.querySelector(rule.action.selector);
+    return null;
+  }
+
   const actions = {
     // swapImage handles both <img> src and background-image on any element.
+    // Target is a named slot (preferred) or a raw CSS selector (advanced).
     swapImage(rule) {
-      const el = document.querySelector(rule.action.selector);
-      if (!el) { console.warn(`[personalise] selector not found: ${rule.action.selector}`); return false; }
+      const el = swapImageTargetEl(rule);
+      if (!el) {
+        const where = rule.action.slot ? `slot "${rule.action.slot}"` : `selector ${rule.action.selector}`;
+        console.warn(`[personalise] swapImage target not found: ${where}`); return false;
+      }
       const image = rule.action.image;
       if (!image) { console.warn('[personalise] swapImage missing image'); return false; }
       if (el.tagName === 'IMG') {
@@ -501,6 +611,28 @@
     #pp-ai-modal .pp-ai-close { position: absolute; top: 10px; right: 14px; background: transparent;
       border: 0; font-size: 26px; cursor: pointer; color: #888; line-height: 1; }
     #pp-ai-modal .pp-ai-close:hover { color: #222; }
+
+    /* Visual image gallery picker */
+    #pp-image-gallery .pp-ig-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483643; }
+    #pp-image-gallery .pp-ig-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      z-index: 2147483644; background: #fff; width: min(760px, 94vw); max-height: 86vh; overflow: hidden;
+      border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.4); display: flex; flex-direction: column;
+      font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222; }
+    #pp-image-gallery .pp-ig-head { display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid #eee; flex: 0 0 auto; }
+    #pp-image-gallery .pp-ig-head h3 { margin: 0; font: 600 18px/1.3 Georgia, "Merriweather", serif; }
+    #pp-image-gallery .pp-ig-close { background: transparent; border: 0; font-size: 26px; cursor: pointer; color: #888; line-height: 1; }
+    #pp-image-gallery .pp-ig-close:hover { color: #222; }
+    #pp-image-gallery .pp-ig-empty { padding: 40px 20px; text-align: center; color: #888; }
+    #pp-image-gallery .pp-ig-grid { padding: 16px 20px; overflow-y: auto;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    #pp-image-gallery .pp-ig-cell { padding: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;
+      cursor: pointer; background: #fafafa; text-align: left; }
+    #pp-image-gallery .pp-ig-cell:hover { border-color: #ff6b3d; box-shadow: 0 4px 14px rgba(255,107,61,0.25); }
+    #pp-image-gallery .pp-ig-thumb { width: 100%; height: 92px; background-size: cover; background-position: center;
+      background-repeat: no-repeat; background-color: #eee; }
+    #pp-image-gallery .pp-ig-meta { padding: 6px 8px; font-size: 11px; color: #555;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   `;
 
   // -------------------- DOM helpers --------------------
@@ -596,6 +728,80 @@
     document.addEventListener('click', click, true);
     document.addEventListener('keydown', key, true);
     pickState = { cleanup };
+  }
+
+  // -------------------- Visual image gallery picker --------------------
+  // Shows every image on the page as a grid of thumbnails (hero first). The SE
+  // clicks one; we hand back its unique selector — same contract as startPick,
+  // so everything downstream (pre-apply, SPA re-fire) is unchanged.
+  function startImageGallery(onPicked) {
+    const existing = document.getElementById('pp-image-gallery');
+    if (existing) existing.remove();
+    const images = collectPageImages();
+
+    const wrap = document.createElement('div'); wrap.id = 'pp-image-gallery';
+    const backdrop = document.createElement('div'); backdrop.className = 'pp-ig-backdrop';
+    const box = document.createElement('div'); box.className = 'pp-ig-box';
+    const close = () => wrap.remove();
+
+    const head = document.createElement('div'); head.className = 'pp-ig-head';
+    const h = document.createElement('h3'); h.textContent = 'Pick the image to replace';
+    const closeBtn = document.createElement('button'); closeBtn.className = 'pp-ig-close';
+    closeBtn.textContent = '×'; closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.addEventListener('click', close);
+    head.appendChild(h); head.appendChild(closeBtn);
+    box.appendChild(head);
+
+    if (!images.length) {
+      const empty = document.createElement('div'); empty.className = 'pp-ig-empty';
+      empty.textContent = 'No images found on this page.';
+      box.appendChild(empty);
+    } else {
+      const grid = document.createElement('div'); grid.className = 'pp-ig-grid';
+      images.forEach((im, i) => {
+        const cell = document.createElement('button'); cell.className = 'pp-ig-cell'; cell.type = 'button';
+        const thumb = document.createElement('div'); thumb.className = 'pp-ig-thumb';
+        thumb.style.backgroundImage = `url('${im.src.replace(/'/g, "\\'")}')`;
+        const meta = document.createElement('div'); meta.className = 'pp-ig-meta';
+        meta.textContent = `${im.w}×${im.h}${im.kind === 'bg' ? ' · bg' : ''}` + (i === 0 ? ' · largest' : '');
+        cell.appendChild(thumb); cell.appendChild(meta);
+        cell.title = im.src;
+        // Hover highlights the real element on the page so the SE can confirm.
+        cell.addEventListener('mouseenter', () => flashElement(im.el, true));
+        cell.addEventListener('mouseleave', () => flashElement(im.el, false));
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const sel = uniqueSelector(im.el);
+          flashElement(im.el, false);
+          close();
+          onPicked(sel, im.el);
+        });
+        grid.appendChild(cell);
+      });
+      box.appendChild(grid);
+    }
+
+    wrap.appendChild(backdrop); wrap.appendChild(box);
+    document.body.appendChild(wrap);
+    backdrop.addEventListener('click', close);
+    const esc = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc, true); } };
+    document.addEventListener('keydown', esc, true);
+  }
+
+  // Briefly outline a page element (used on gallery hover).
+  let __flashEl = null;
+  function flashElement(el, on) {
+    if (__flashEl && __flashEl !== el) { __flashEl.style.outline = __flashEl.__ppPrevOutline || ''; __flashEl = null; }
+    if (!(el instanceof Element)) return;
+    if (on) {
+      el.__ppPrevOutline = el.style.outline;
+      el.style.outline = '3px solid #ff6b3d';
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      __flashEl = el;
+    } else {
+      el.style.outline = el.__ppPrevOutline || '';
+      __flashEl = null;
+    }
   }
 
   // -------------------- Panel rendering --------------------
@@ -1174,19 +1380,82 @@
 
     // Action-specific fields
     if (rule.action.type === 'swapImage') {
-      const selField = el('div', { className: 'pp-thr-field' });
-      selField.appendChild(el('label', { text: 'Target' }));
-      const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: '.hero, #banner, img.foo' });
-      selInput.addEventListener('change', () => { rule.action.selector = selInput.value; saveConfig(); });
-      const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
-      pickBtn.title = 'Click an element on the page to capture its selector';
-      pickBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        startPick((sel) => { rule.action.selector = sel; saveConfig(); renderPanel(); });
-      });
-      selField.appendChild(selInput);
-      selField.appendChild(pickBtn);
-      wrap.appendChild(selField);
+      // Named-slot picker: the primary, selector-free way to choose what to
+      // replace. Falls back to a raw CSS selector when the page has no slots
+      // or the SE picks "Custom selector...".
+      const slots = discoverSlots();
+      const CUSTOM = '__custom__';
+      // A rule is in "custom" mode if it already has a selector and no slot, or
+      // its slot no longer exists on this page.
+      const slotNamesHere = new Set(slots.map(s => s.name));
+      let usingCustom = !rule.action.slot || !slotNamesHere.has(rule.action.slot);
+
+      if (slots.length) {
+        const slotField = el('div', { className: 'pp-thr-field' });
+        slotField.appendChild(el('label', { text: 'Replace' }));
+        const slotSel = document.createElement('select');
+        const ph = document.createElement('option');
+        ph.value = ''; ph.textContent = slots.length ? 'Choose a slot…' : '(no slots on page)';
+        ph.disabled = true; slotSel.appendChild(ph);
+        for (const s of slots) {
+          const o = document.createElement('option');
+          o.value = s.name; o.textContent = s.label + (s.kind === 'section' ? ' (section)' : '');
+          if (!usingCustom && rule.action.slot === s.name) o.selected = true;
+          slotSel.appendChild(o);
+        }
+        const customOpt = document.createElement('option');
+        customOpt.value = CUSTOM; customOpt.textContent = 'Custom selector…';
+        if (usingCustom) customOpt.selected = true;
+        slotSel.appendChild(customOpt);
+        if (usingCustom && !rule.action.selector) slotSel.value = '';
+        slotSel.addEventListener('change', () => {
+          if (slotSel.value === CUSTOM) {
+            delete rule.action.slot;
+          } else if (slotSel.value) {
+            rule.action.slot = slotSel.value;
+            delete rule.action.selector;
+          }
+          saveConfig(); renderPanel();
+        });
+        slotField.appendChild(slotSel);
+        wrap.appendChild(slotField);
+
+        // Quick path: browse the page's images even while a slot is selected.
+        const browseField = el('div', { className: 'pp-thr-field' });
+        browseField.appendChild(el('label', { text: '' }));
+        const browseSlotBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '🖼 Browse page images' });
+        browseSlotBtn.title = 'Pick the image to replace from a gallery of the page’s images';
+        browseSlotBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+        });
+        browseField.appendChild(browseSlotBtn);
+        wrap.appendChild(browseField);
+      }
+
+      // Raw selector + Pick — shown only in custom mode (or when no slots exist).
+      if (usingCustom) {
+        const selField = el('div', { className: 'pp-thr-field' });
+        selField.appendChild(el('label', { text: 'Target' }));
+        const selInput = el('input', { type: 'text', value: rule.action.selector || '', placeholder: '.hero, #banner, img.foo' });
+        selInput.addEventListener('change', () => { rule.action.selector = selInput.value; delete rule.action.slot; saveConfig(); });
+        const browseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Browse' });
+        browseBtn.title = 'Pick the image to replace from a gallery of the page’s images';
+        browseBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startImageGallery((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+        });
+        const pickBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick' });
+        pickBtn.title = 'Click an element on the page to capture its selector';
+        pickBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startPick((sel) => { rule.action.selector = sel; delete rule.action.slot; saveConfig(); renderPanel(); });
+        });
+        selField.appendChild(selInput);
+        selField.appendChild(browseBtn);
+        selField.appendChild(pickBtn);
+        wrap.appendChild(selField);
+      }
 
       const imgField = el('div', { className: 'pp-thr-field' });
       imgField.appendChild(el('label', { text: 'Image URL' }));
@@ -1275,7 +1544,43 @@
     const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Generate config with AI' });
     aiBtn.addEventListener('click', (e) => { e.stopPropagation(); openAiPromptModal(); });
     body.appendChild(aiBtn);
-    body.appendChild(el('div', { className: 'pp-hint', text: 'Copy a prompt for ChatGPT/Claude, paste back JSON to import.' }));
+    body.appendChild(el('div', { className: 'pp-hint', text: 'Copy a prompt for ChatGPT/Claude, or wire up the gateway below to generate in one click.' }));
+
+    // Claude Gateway \u2014 connect the inline "Generate with gateway" button.
+    // Stored in `ui` (local only): never exported with a story, never clobbered
+    // by importing one.
+    body.appendChild(el('h4', { text: 'Claude Gateway' }));
+
+    const gwUrlRow = el('div', { className: 'pp-row' });
+    const gwUrlInput = el('input', { type: 'text', value: ui.gateway.url || '', placeholder: 'http://localhost:4000' });
+    gwUrlInput.addEventListener('change', () => { ui.gateway.url = gwUrlInput.value.trim(); saveUi(); });
+    gwUrlRow.appendChild(gwUrlInput);
+    body.appendChild(gwUrlRow);
+
+    const gwKeyRow = el('div', { className: 'pp-row' });
+    const gwKeyInput = el('input', { type: 'password', value: ui.gateway.key || '', placeholder: 'Gateway key' });
+    gwKeyInput.autocomplete = 'off';
+    gwKeyInput.addEventListener('change', () => { ui.gateway.key = gwKeyInput.value.trim(); saveUi(); });
+    const gwTestBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Test' });
+    gwTestBtn.title = 'Check the gateway is reachable (GET /health)';
+    gwKeyRow.appendChild(gwKeyInput);
+    gwKeyRow.appendChild(gwTestBtn);
+    body.appendChild(gwKeyRow);
+
+    const gwStatus = el('div', { className: 'pp-hint', text: 'URL + key for the Claude Gateway. Stays on this machine; not saved in exported stories.' });
+    body.appendChild(gwStatus);
+    gwTestBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      // Persist latest field values before testing.
+      ui.gateway.url = gwUrlInput.value.trim(); ui.gateway.key = gwKeyInput.value.trim(); saveUi();
+      gwTestBtn.disabled = true; const orig = gwTestBtn.textContent; gwTestBtn.textContent = '\u2026';
+      gwStatus.textContent = 'Checking ' + gatewayBaseUrl() + '/health \u2026';
+      const res = await gatewayHealth();
+      gwTestBtn.disabled = false; gwTestBtn.textContent = orig;
+      gwStatus.textContent = res.ok
+        ? '\u2713 Gateway reachable at ' + gatewayBaseUrl() + (gatewayKey() ? '' : ' (add a key to generate)')
+        : '\u2717 ' + gatewayBaseUrl() + ': ' + res.reason;
+    });
 
     // Persona avatar \u2014 shown inside the collapsed badge
     body.appendChild(el('h4', { text: 'Persona avatar' }));
@@ -1551,6 +1856,14 @@
     }
     const urlList = [...seedUrls].slice(0, 6).map(u => '  - ' + u).join('\n');
 
+    // Named slots exposed by the current page (data-personalise* convention).
+    // The engine can target these by name, so the AI should prefer them over
+    // brittle CSS selectors for swapImage actions.
+    const slots = (typeof discoverSlots === 'function') ? discoverSlots() : [];
+    const slotList = slots.length
+      ? slots.map(s => `  - ${s.name}${s.kind === 'section' ? ' (section)' : ''}`).join('\n')
+      : '  (none found on this page — use CSS selectors instead)';
+
     const intent = userIntent && userIntent.trim()
       ? userIntent.trim()
       : '<< Describe what you want the personalisation to accomplish. Examples:\n'
@@ -1566,6 +1879,12 @@ Base URL: ${origin || '(unknown \u2014 user is running locally)'}
 Hostname: ${host}
 Example URLs to look at first:
 ${urlList}
+
+NAMED SLOTS on the current page (prefer these as swapImage targets)
+These are stable, friendly targets the engine can address by name instead of a
+CSS selector. For any swapImage action, use "slot": "<name>" below rather than
+"selector" whenever one fits:
+${slotList}
 
 WHAT I WANT (user intent)
 ${intent}
@@ -1624,6 +1943,9 @@ SCHEMA (must match exactly \u2014 engine imports this verbatim)
 ACTION VARIANTS
 
 Swap image (background-image or <img src>):
+Preferred form — target a named slot from the list above (selector-free):
+{ "type": "swapImage", "slot": "<slot name>", "image": "<absolute image URL>" }
+Fallback form — only when no slot fits, target a raw CSS selector:
 { "type": "swapImage", "selector": "<CSS selector>", "image": "<absolute image URL>" }
 
 Show popup:
@@ -1642,9 +1964,12 @@ AUTHORING RULES
 - Topic IDs must be kebab-case (sri-lanka-interest, family-focused, etc.).
 - Weights: 1 is the default per-page contribution. Use higher weights
   (2\u20133) for hub / landing pages and 4+ only for very high-signal pages.
-- Prefer semantic CSS selectors (BEM-style: .brand-hero__title, .cta__button)
-  over deep :nth-of-type() chains. If the site uses utility-class frameworks
-  (Tailwind etc.), prefer data-* attributes or aria-label selectors.
+- For swapImage, ALWAYS prefer a named slot ("slot": "...") from the NAMED SLOTS
+  list over a CSS selector. Only fall back to "selector" when no slot fits.
+- When a selector is unavoidable, prefer semantic CSS selectors (BEM-style:
+  .brand-hero__title, .cta__button) over deep :nth-of-type() chains. If the site
+  uses utility-class frameworks (Tailwind etc.), prefer data-* attributes or
+  aria-label selectors.
 - Only pick images you can verify are hotlink-safe. Prefer the target
   site's own CDN, or open-license hosts (Wikimedia Commons). Never invent URLs.
 - If runScript is unavoidable, keep the snippet short (<20 lines) and
@@ -1689,6 +2014,65 @@ I will import that file directly into the Personalise panel via
 Config -> Save/load story -> Import.`;
   }
 
+  // -------------------- Claude Gateway client --------------------
+  // The gateway wraps a human's Claude login behind a small HTTP server, so
+  // there's no provider API key / per-token billing. We send the gateway key on
+  // every call and keep calls self-contained (no server-side memory).
+  function gatewayBaseUrl() {
+    return (ui.gateway && ui.gateway.url ? ui.gateway.url : 'http://localhost:4000').replace(/\/+$/, '');
+  }
+  function gatewayKey() { return (ui.gateway && ui.gateway.key || '').trim(); }
+
+  // A cross-origin fetch that is blocked by CORS throws a TypeError that is
+  // indistinguishable from a genuine network failure — the browser hides the
+  // real reason for security. When the page's origin differs from the gateway
+  // origin, a thrown fetch is very likely CORS, so we say so.
+  function isCrossOrigin() {
+    try { return new URL(gatewayBaseUrl()).origin !== window.location.origin; }
+    catch (e) { return true; }
+  }
+  function fetchFailureHint() {
+    return isCrossOrigin()
+      ? 'unreachable, or the browser blocked it (CORS). If curl works but this does not, the gateway needs CORS headers — see gateway-cors-patch.md.'
+      : 'unreachable — is it running?';
+  }
+
+  // GET /health — no key needed. Returns { ok, reason } (never throws) so the
+  // UI can explain *why* it failed, not just that it did.
+  async function gatewayHealth() {
+    let r;
+    try {
+      r = await fetch(gatewayBaseUrl() + '/health', { method: 'GET' });
+    } catch (e) {
+      return { ok: false, reason: fetchFailureHint() };
+    }
+    if (!r.ok) return { ok: false, reason: 'returned HTTP ' + r.status };
+    const j = await r.json().catch(() => ({}));
+    return (j && j.ok) ? { ok: true } : { ok: false, reason: 'responded but not healthy' };
+  }
+
+  // POST /complete — one prompt in, text out. Throws with a readable message so
+  // callers can show it to the SE.
+  async function gatewayComplete(prompt, system) {
+    const key = gatewayKey();
+    if (!key) throw new Error('No gateway key set — add it in Config → Claude Gateway.');
+    let r;
+    try {
+      r = await fetch(gatewayBaseUrl() + '/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify(system ? { prompt, system } : { prompt })
+      });
+    } catch (e) {
+      throw new Error('Gateway at ' + gatewayBaseUrl() + ' ' + fetchFailureHint());
+    }
+    if (r.status === 401) throw new Error('Gateway rejected the key (401) — check / refresh it.');
+    if (!r.ok) throw new Error('Gateway error ' + r.status);
+    const j = await r.json().catch(() => ({}));
+    if (typeof j.text !== 'string') throw new Error('Gateway returned no text.');
+    return j.text;
+  }
+
   function openAiPromptModal() {
     // Reuse popup-style modal
     if (document.getElementById('pp-ai-modal')) return;
@@ -1709,10 +2093,17 @@ Config -> Save/load story -> Import.`;
     const intentArea = document.createElement('textarea'); intentArea.className = 'pp-ai-intent'; intentArea.rows = 3;
     intentArea.placeholder = 'e.g. Boost Sri Lanka interest \u2014 swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
 
+    const genBtn = document.createElement('button'); genBtn.className = 'pp-btn'; genBtn.textContent = '\u26A1 Generate with gateway';
     const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '\uD83D\uDCCB Copy prompt';
 
     const rowA = document.createElement('div'); rowA.className = 'pp-ai-row';
+    rowA.appendChild(genBtn);
     rowA.appendChild(copyBtn);
+
+    const gwStatus = document.createElement('div'); gwStatus.className = 'pp-ai-sub'; gwStatus.style.marginTop = '6px';
+    gwStatus.textContent = gatewayKey()
+      ? 'Gateway: ' + gatewayBaseUrl()
+      : 'No gateway key set \u2014 add it in Config \u2192 Claude Gateway, or use Copy prompt.';
 
     const outLabel = document.createElement('label'); outLabel.textContent = 'Paste the AI\'s JSON response here';
     outLabel.className = 'pp-ai-label pp-ai-label--gap';
@@ -1729,6 +2120,7 @@ Config -> Save/load story -> Import.`;
     box.appendChild(intentLabel);
     box.appendChild(intentArea);
     box.appendChild(rowA);
+    box.appendChild(gwStatus);
     box.appendChild(outLabel);
     box.appendChild(outArea);
     box.appendChild(rowB);
@@ -1739,6 +2131,32 @@ Config -> Save/load story -> Import.`;
     function close() { wrap.remove(); }
     closeBtn.addEventListener('click', close);
     backdrop.addEventListener('click', close);
+
+    // Parse a model's JSON reply (tolerating code fences) and import it.
+    function parseAndApply(raw) {
+      const cleaned = String(raw).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
+      const parsed = JSON.parse(cleaned);
+      const cfg = parsed && parsed._kind === 'web_perso_story' && parsed.config ? parsed.config : parsed;
+      applyImportedConfig(cfg);
+    }
+
+    genBtn.addEventListener('click', async () => {
+      if (!gatewayKey()) { alert('No gateway key set — add it in Config → Claude Gateway first (or use Copy prompt).'); return; }
+      const original = genBtn.textContent;
+      genBtn.disabled = true; genBtn.textContent = 'Generating…';
+      try {
+        const prompt = buildAiPrompt(intentArea.value);
+        const text = await gatewayComplete(prompt);
+        outArea.value = text; // show what came back, so the SE can inspect/tweak
+        parseAndApply(text);
+        genBtn.textContent = 'Applied ✓';
+        setTimeout(close, 700);
+      } catch (err) {
+        genBtn.disabled = false; genBtn.textContent = original;
+        alert('Gateway generate failed: ' + err.message
+          + (outArea.value ? '\n\nThe raw response is in the box below — you can fix and Apply it manually.' : ''));
+      }
+    });
 
     copyBtn.addEventListener('click', async () => {
       const prompt = buildAiPrompt(intentArea.value);
@@ -1756,15 +2174,8 @@ Config -> Save/load story -> Import.`;
     applyBtn.addEventListener('click', () => {
       const raw = outArea.value.trim();
       if (!raw) { alert('Paste the AI\'s JSON output first.'); return; }
-      let parsed;
       try {
-        // Tolerate the model wrapping in code fences even though we asked not to
-        const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
-        parsed = JSON.parse(cleaned);
-      } catch (err) { alert('Not valid JSON: ' + err.message); return; }
-      try {
-        const cfg = parsed && parsed._kind === 'web_perso_story' && parsed.config ? parsed.config : parsed;
-        applyImportedConfig(cfg);
+        parseAndApply(raw);
         close();
       } catch (err) { alert('Import failed: ' + err.message); }
     });
@@ -1863,7 +2274,8 @@ Config -> Save/load story -> Import.`;
 
   function shouldPreApply(rule) {
     if (rule.action.type !== 'swapImage') return false;
-    if (!rule.action.selector || !rule.action.image) return false;
+    if (!rule.action.image) return false;
+    if (!rule.action.selector && !rule.action.slot) return false;
     if (!ruleApplies(rule)) return false;
     const score = state.scores[rule.topicId] || 0;
     // Pre-apply if score is already \u2265 threshold OR the rule has already fired
@@ -1879,7 +2291,16 @@ Config -> Save/load story -> Import.`;
     const preloads = [];
     for (const rule of config.thresholdRules) {
       if (!shouldPreApply(rule)) continue;
-      const sel = rule.action.selector;
+      // Resolve slot rules to a concrete selector against the live DOM. If the
+      // slot can't be resolved yet (element not painted), skip pre-apply this
+      // run — the live-DOM re-fire and evaluateRules paths still catch it.
+      let sel = rule.action.selector;
+      if (rule.action.slot) {
+        const target = resolveSlotTarget(rule.action.slot, 'image');
+        if (!target) continue;
+        sel = uniqueSelector(target);
+      }
+      if (!sel) continue;
       const img = rule.action.image;
       // Background-image swap (safe as CSS override).
       // Escaping URL quotes: use the URL as-is; if a user pastes a URL with
