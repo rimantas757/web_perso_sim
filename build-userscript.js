@@ -31,7 +31,10 @@ const meta = `// ==UserScript==
 // @author       rimantas757
 // @match        *://*/*
 // @run-at       document-start
-// @grant        none
+// Scope is managed at RUNTIME via an allowlist (survives updates), not @match.
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @updateURL    ${base}/personalise.user.js
 // @downloadURL  ${base}/personalise.user.js
 // @supportURL   https://github.com/rimantas757/web_perso_sim/issues

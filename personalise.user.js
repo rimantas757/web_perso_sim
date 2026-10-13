@@ -1,12 +1,15 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1128
+// @version      2026.10.13.1150
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
 // @run-at       document-start
-// @grant        none
+// Scope is managed at RUNTIME via an allowlist (survives updates), not @match.
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @updateURL    https://rimantas757.github.io/web_perso_sim/personalise.user.js
 // @downloadURL  https://rimantas757.github.io/web_perso_sim/personalise.user.js
 // @supportURL   https://github.com/rimantas757/web_perso_sim/issues
@@ -115,6 +118,57 @@
   function saveJSON(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* ignore */ }
   }
+
+  // -------------------- Site allowlist (update-proof scoping) --------------------
+  // Scope is stored as DATA, not in the script's @match metadata — so a
+  // Tampermonkey auto-update (which rewrites @match from the published file)
+  // can't reset it. Prefer Tampermonkey's cross-origin GM storage so the
+  // allowlist is shared across sites; fall back to localStorage when the engine
+  // runs without GM (install-page injection, bookmarklet, tests).
+  const SITES_STORAGE_KEY = 'personalise::sites';
+  function ppGet(key, fallback) {
+    try { if (typeof GM_getValue === 'function') { const v = GM_getValue(key); return v === undefined ? fallback : v; } } catch (e) { /* ignore */ }
+    return loadJSON(key, fallback);
+  }
+  function ppSet(key, value) {
+    try { if (typeof GM_setValue === 'function') { GM_setValue(key, value); return; } } catch (e) { /* ignore */ }
+    saveJSON(key, value);
+  }
+  function getAllowedSites() { const v = ppGet(SITES_STORAGE_KEY, []); return Array.isArray(v) ? v : []; }
+  function setAllowedSites(list) { ppSet(SITES_STORAGE_KEY, list); }
+  // A stored entry matches the current host exactly, or as a parent domain
+  // (entry "audleytravel.com" matches "www.audleytravel.com").
+  function hostMatchesEntry(host, entry) {
+    if (!host || !entry) return false;
+    host = host.toLowerCase(); entry = entry.toLowerCase().replace(/^www\./, '');
+    return host === entry || host.endsWith('.' + entry);
+  }
+  function siteAllowed(host) { return getAllowedSites().some(e => hostMatchesEntry(host, e)); }
+  function currentHostAllowed() { return siteAllowed(window.location.hostname); }
+  function addCurrentSite() {
+    const bare = (window.location.hostname || '').toLowerCase().replace(/^www\./, '');
+    if (!bare) return;
+    const list = getAllowedSites();
+    if (!list.includes(bare)) { list.push(bare); setAllowedSites(list); }
+  }
+  function removeSite(entry) {
+    setAllowedSites(getAllowedSites().filter(e => e !== entry));
+  }
+  function toggleCurrentSite() {
+    if (currentHostAllowed()) {
+      // Remove any entry that matches the current host.
+      const host = window.location.hostname;
+      setAllowedSites(getAllowedSites().filter(e => !hostMatchesEntry(host, e)));
+    } else {
+      addCurrentSite();
+    }
+    location.reload();
+  }
+  // Reachable from non-GM contexts (and tests) where there's no Tampermonkey menu.
+  try {
+    window.personaliseEnableHere = () => { addCurrentSite(); location.reload(); };
+    window.personaliseDisableHere = () => { toggleCurrentSite(); };
+  } catch (e) { /* ignore */ }
 
   let config = loadJSON(CONFIG_STORAGE_KEY, null);
   if (!config) { config = defaultConfig(); saveJSON(CONFIG_STORAGE_KEY, config); }
@@ -1992,6 +2046,28 @@
         : '\u2717 ' + gatewayBaseUrl() + ': ' + res.reason;
     });
 
+    // This site \u2014 the update-proof allowlist. Scope lives here (data), not in
+    // the userscript @match, so it survives Tampermonkey auto-updates.
+    body.appendChild(el('h4', { text: 'Where it runs' }));
+    body.appendChild(el('div', { className: 'pp-current-url pp-url', text: window.location.hostname || '(local)' }));
+    const stopBtn = el('button', { className: 'pp-btn pp-btn--full pp-btn--danger', text: 'Stop running on this site' });
+    stopBtn.title = 'Removes this site from the allowlist and reloads \u2014 the panel goes dormant here';
+    stopBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCurrentSite(); });
+    body.appendChild(stopBtn);
+    const sites = getAllowedSites();
+    const siteList = el('ul');
+    if (!sites.length) siteList.appendChild(el('li', { className: 'pp-empty', text: 'No sites allow-listed' }));
+    else for (const sEntry of sites) {
+      const li = el('li');
+      li.appendChild(el('span', { className: 'pp-url', text: sEntry }));
+      const del = el('button', { className: 'pp-icon', text: '\u00d7', ariaLabel: 'Remove site', title: 'Remove site' });
+      del.addEventListener('click', (e) => { e.stopPropagation(); removeSite(sEntry); renderPanel(); });
+      li.appendChild(del);
+      siteList.appendChild(li);
+    }
+    body.appendChild(siteList);
+    body.appendChild(el('div', { className: 'pp-hint', text: 'Scope persists across userscript updates (stored as data, not in @match). Enable other sites from the Tampermonkey menu.' }));
+
     // Persona avatar \u2014 shown inside the collapsed badge
     body.appendChild(el('h4', { text: 'Persona avatar' }));
     const personaRow = el('div', { className: 'pp-persona-row' });
@@ -2916,11 +2992,28 @@ Config -> Save/load story -> Import.`;
     console.info('[personalise] engine ready', { client: config.client, mode: ui.mode, state });
   }
 
-  // Run pre-apply as EARLY as possible \u2014 even before DOMContentLoaded.
-  // This is what stops the flicker for background-image swaps: the CSS lands
-  // before the browser has painted the target element.
-  preApplyPaintedRules();
+  // -------------------- Site gate --------------------
+  // Scoping lives in the allowlist (data), not @match (metadata), so it survives
+  // Tampermonkey auto-updates. Register the enable/disable menu command ALWAYS
+  // (so a dormant site can be enabled from the Tampermonkey tray), then bail out
+  // completely on sites that aren't allowed.
+  const ENABLED = currentHostAllowed();
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('Personalise: ' + (ENABLED ? 'disable' : 'enable') + ' on this site', toggleCurrentSite);
+    }
+  } catch (e) { /* ignore */ }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  if (!ENABLED) {
+    console.info('[personalise] dormant \u2014 ' + (window.location.hostname || 'this site')
+      + ' is not in the allowlist. Enable it from the Tampermonkey menu'
+      + (typeof GM_registerMenuCommand === 'function' ? '' : ' (or call personaliseEnableHere()).'));
+  } else {
+    // Run pre-apply as EARLY as possible \u2014 even before DOMContentLoaded. This is
+    // what stops the flicker for background-image swaps: the CSS lands before the
+    // browser has painted the target element.
+    preApplyPaintedRules();
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+  }
 })();
