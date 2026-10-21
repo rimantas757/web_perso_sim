@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.13.1930
+// @version      2026.10.21.1724
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -180,6 +180,13 @@
   // Claude Gateway connection (per-SE machine settings — kept in `ui` so they
   // are NOT exported with a story and NOT clobbered by importing one).
   if (!ui.gateway) ui.gateway = { url: 'http://localhost:4000', key: '' };
+
+  // With "Hide until identified" on, the avatar waits for state.identified (set
+  // by a revealAvatar popup's form submit, cleared by Reset scores).
+  function avatarVisible() {
+    if (!config.avatarUrl) return false;
+    return !config.avatarHidden || !!state.identified;
+  }
 
   function saveConfig() { saveJSON(CONFIG_STORAGE_KEY, config); }
   function saveState() { saveJSON(STATE_STORAGE_KEY, state); }
@@ -619,6 +626,9 @@
         const thanks = document.createElement('div'); thanks.className = 'pp-rp__thanks';
         thanks.textContent = 'Thanks \u2014 we\u2019ll be in touch.';
         content.replaceChildren(thanks);
+        if (rule.action.revealAvatar && !state.identified) {
+          state.identified = true; saveState(); renderPanel();
+        }
       }, true);
       document.body.appendChild(wrap);
       closeBtn.addEventListener('click', () => wrap.remove());
@@ -663,7 +673,7 @@
   };
 
   // -------------------- recStrip helpers --------------------
-  // Original innerHTML of each row we replaced, keyed by rule.id, so un-fire /
+  // Original innerHTML of each row we replaced, keyed by rule.id, so deleting the rule /
   // reset can put the site back exactly as it was.
   const __rsOriginals = new Map();
 
@@ -739,7 +749,7 @@
     return true;
   }
 
-  // Restore a replaced row to its original markup (un-fire / reset), and remove
+  // Restore a replaced row to its original markup (rule deleted / reset), and remove
   // any injected generic strip.
   function restoreRecStrip(rule) {
     const stash = __rsOriginals.get(rule.id);
@@ -781,25 +791,34 @@
 
   // -------------------- Panel styles --------------------
   const PANEL_CSS = `
-    /* z-index 2147483647 = max signed int; sits above any chatbot/consent widget.
+    /* ---- Panel shell: iOS-style grouped sheet ----
+       z-index 2147483647 = max signed int; sits above any chatbot/consent widget.
        isolation:isolate prevents a parent creating a new stacking context that traps us. */
     #pp-panel { position: fixed; z-index: 2147483647; isolation: isolate;
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      color: #222; background: #fff; border: 1px solid #d8d8d8;
-      box-shadow: 0 12px 40px rgba(0,0,0,0.28); border-radius: 8px;
-      width: 340px; overflow: hidden;
+      --pp-accent: #007aff; --pp-accent-soft: rgba(0,122,255,0.10); --pp-danger: #ff3b30; --pp-danger-soft: rgba(255,59,48,0.10);
+      --pp-ok: #34c759; --pp-bg: #f2f2f7; --pp-card: #fff; --pp-text: #1c1c1e; --pp-muted: #8e8e93; --pp-sep: rgba(60,60,67,0.12);
+      --pp-field: rgba(118,118,128,0.12);
+      --pp-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+      font: 13px/1.4 var(--pp-font);
+      -webkit-font-smoothing: antialiased; letter-spacing: -0.01em;
+      color: var(--pp-text); background: var(--pp-bg); border: 0.5px solid rgba(0,0,0,0.08);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.08); border-radius: 20px;
+      width: 380px; overflow: hidden;
       /* Default position (overridden by JS once ui.pos is set) */
       bottom: 16px; right: 16px; }
+    #pp-panel *, #pp-panel *::before, #pp-panel *::after { box-sizing: border-box; }
     #pp-panel.is-positioned { bottom: auto; right: auto; }
     #pp-panel.is-sized { /* width + height inline by JS */ }
     #pp-panel__header { display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px; background: #4d726d; color: #fff; cursor: grab; user-select: none; touch-action: none;
-      flex: 0 0 auto; }
+      padding: 16px 16px 10px; background: rgba(249,249,251,0.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+      color: var(--pp-text); cursor: grab; user-select: none; touch-action: none; flex: 0 0 auto; }
     #pp-panel__header.is-dragging { cursor: grabbing; }
-    #pp-panel__header strong { font-weight: 600; letter-spacing: 0.4px; }
-    #pp-panel__client { font-size: 10px; opacity: 0.85; }
-    #pp-panel__toggle { background: transparent; border: 0; color: #fff; font-size: 16px; cursor: pointer; padding: 0 4px; }
-    #pp-panel__body { padding: 12px 14px; max-height: 60vh; overflow-y: auto; }
+    #pp-panel .pp-title strong { display: block; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+    #pp-panel__client { font-size: 12px; color: var(--pp-muted); margin-top: 1px; }
+    #pp-panel__toggle { width: 28px; height: 28px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+      background: var(--pp-field); color: #3c3c43; font: 600 18px/28px -apple-system, sans-serif; text-align: center; }
+    #pp-panel__toggle:hover { background: rgba(118,118,128,0.2); }
+    #pp-panel__body { padding: 4px 16px 16px; max-height: 64vh; overflow-y: auto; scrollbar-width: thin; }
     /* When a size is set explicitly, panel becomes a flex column so the body
        stretches and its overflow works instead of overflowing the panel. */
     #pp-panel.is-sized { display: flex; flex-direction: column; }
@@ -808,151 +827,209 @@
     /* Resize handles (expanded only). 8 handles: 4 corners + 4 sides. */
     #pp-panel:not(.is-collapsed) .pp-resize { position: absolute; z-index: 1; touch-action: none; }
     #pp-panel.is-collapsed .pp-resize { display: none; }
-    #pp-panel .pp-resize-n  { top: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
-    #pp-panel .pp-resize-s  { bottom: -3px; left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
-    #pp-panel .pp-resize-e  { top: 8px; bottom: 8px; right: -3px; width: 6px; cursor: ew-resize; }
-    #pp-panel .pp-resize-w  { top: 8px; bottom: 8px; left: -3px; width: 6px; cursor: ew-resize; }
-    #pp-panel .pp-resize-ne { top: -3px; right: -3px; width: 12px; height: 12px; cursor: nesw-resize; }
-    #pp-panel .pp-resize-nw { top: -3px; left: -3px; width: 12px; height: 12px; cursor: nwse-resize; }
-    #pp-panel .pp-resize-se { bottom: -3px; right: -3px; width: 12px; height: 12px; cursor: nwse-resize; }
-    #pp-panel .pp-resize-sw { bottom: -3px; left: -3px; width: 12px; height: 12px; cursor: nesw-resize; }
-    /* Slight visual hint on the SE corner (the most-used one) */
-    #pp-panel:not(.is-collapsed) .pp-resize-se::after { content: ''; position: absolute; right: 3px; bottom: 3px;
-      width: 6px; height: 6px; border-right: 2px solid #4d726d; border-bottom: 2px solid #4d726d; opacity: 0.5; }
+    #pp-panel .pp-resize-n  { top: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+    #pp-panel .pp-resize-s  { bottom: -3px; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+    #pp-panel .pp-resize-e  { top: 12px; bottom: 12px; right: -3px; width: 6px; cursor: ew-resize; }
+    #pp-panel .pp-resize-w  { top: 12px; bottom: 12px; left: -3px; width: 6px; cursor: ew-resize; }
+    #pp-panel .pp-resize-ne { top: -3px; right: -3px; width: 14px; height: 14px; cursor: nesw-resize; }
+    #pp-panel .pp-resize-nw { top: -3px; left: -3px; width: 14px; height: 14px; cursor: nwse-resize; }
+    #pp-panel .pp-resize-se { bottom: -3px; right: -3px; width: 14px; height: 14px; cursor: nwse-resize; }
+    #pp-panel .pp-resize-sw { bottom: -3px; left: -3px; width: 14px; height: 14px; cursor: nesw-resize; }
     body.pp-resizing, body.pp-resizing * { user-select: none !important; }
 
-    /* Expanded header \u2014 flex layout for title / client / minus button. */
+    /* Expanded header — flex layout for title / client / minus button. */
     #pp-panel:not(.is-collapsed) .pp-expanded-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
     #pp-panel:not(.is-collapsed) .pp-badge-content { display: none; }
 
     /* Collapsed = round Salesforce-blue badge. Header becomes the badge. */
     #pp-panel.is-collapsed { width: 64px; height: 64px; border-radius: 50%; overflow: visible;
       background: transparent; border: 0; box-shadow: none; }
-    #pp-panel.is-collapsed #pp-panel__body { display: none; }
-    #pp-panel.is-collapsed #pp-panel__header { padding: 0; background: #00A1E0;
+    #pp-panel.is-collapsed #pp-panel__body, #pp-panel.is-collapsed .pp-mode-tabs { display: none; }
+    #pp-panel.is-collapsed #pp-panel__header { padding: 0; background: #00A1E0; -webkit-backdrop-filter: none; backdrop-filter: none;
       width: 64px; height: 64px; border-radius: 50%; justify-content: center; align-items: center;
-      box-shadow: 0 6px 24px rgba(0,161,224,0.5); border: 2px solid #fff; position: relative; }
-    #pp-panel.is-collapsed #pp-panel__header:hover { background: #0091cf; }
+      box-shadow: 0 8px 24px rgba(0,161,224,0.45); border: 2px solid #fff; position: relative; transition: transform .15s ease; }
+    #pp-panel.is-collapsed #pp-panel__header:hover { transform: scale(1.04); }
     #pp-panel.is-collapsed .pp-expanded-header { display: none; }
     #pp-panel.is-collapsed .pp-badge-content { display: block; width: 44px; height: 44px; }
     #pp-panel.is-collapsed .pp-badge-content svg { width: 100%; height: 100%; display: block; }
     /* Avatar mode: full-bleed round image replaces the SVG + coloured disc. */
-    #pp-panel.is-collapsed.has-avatar #pp-panel__header { background: transparent; padding: 0;
-      border: 2px solid #fff; }
+    #pp-panel.is-collapsed.has-avatar #pp-panel__header { background: transparent; padding: 0; border: 2px solid #fff; }
     #pp-panel.is-collapsed.has-avatar .pp-badge-content { width: 60px; height: 60px; border-radius: 50%; overflow: hidden; }
     #pp-panel.is-collapsed.has-avatar .pp-badge-content img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-    /* Chunky + in the top-right of the collapsed badge to expand */
-    #pp-panel.is-collapsed .pp-expand-btn { position: absolute; top: -6px; right: -6px;
+    /* Small + in the top-right of the collapsed badge to expand */
+    #pp-panel.is-collapsed .pp-expand-btn { position: absolute; top: -4px; right: -4px;
       width: 22px; height: 22px; border-radius: 50%; background: #fff; color: #00A1E0;
-      border: 2px solid #00A1E0; font: 700 16px/16px -apple-system, sans-serif; cursor: pointer;
+      border: 0; font: 700 16px/22px -apple-system, sans-serif; cursor: pointer;
       display: flex; align-items: center; justify-content: center; padding: 0;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
     #pp-panel.is-collapsed .pp-expand-btn:hover { background: #00A1E0; color: #fff; }
     #pp-panel:not(.is-collapsed) .pp-expand-btn { display: none; }
 
-    #pp-panel .pp-mode-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid #eee; }
-    #pp-panel .pp-mode-tab { flex: 1; padding: 8px; text-align: center; cursor: pointer; font-size: 11px;
-      text-transform: uppercase; letter-spacing: 1px; font-weight: 600; color: #999; background: transparent;
-      border: 0; border-bottom: 2px solid transparent; }
-    #pp-panel .pp-mode-tab.is-active { color: #4d726d; border-bottom-color: #4d726d; }
+    /* Segmented control */
+    #pp-panel .pp-mode-tabs { display: flex; gap: 2px; margin: 0 16px 8px; padding: 2px; border-radius: 9px; background: var(--pp-field); }
+    #pp-panel .pp-mode-tab { flex: 1; padding: 6px 8px; text-align: center; cursor: pointer; font: 500 13px/1.2 var(--pp-font); color: var(--pp-text); background: transparent; border: 0; border-radius: 7px; transition: background .15s; }
+    #pp-panel .pp-mode-tab.is-active { background: #fff; font-weight: 600; box-shadow: 0 3px 8px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.04); }
 
-    #pp-panel h4 { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #666; font-weight: 600; }
-    #pp-panel h4:first-child { margin-top: 0; }
-    #pp-panel ul { margin: 0 0 8px; padding: 0; list-style: none; }
-    #pp-panel li { padding: 4px 0; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-    #pp-panel li:last-child { border-bottom: 0; }
-    #pp-panel .pp-score { font-weight: 600; color: #4d726d; }
-    #pp-panel .pp-fired { color: #1f6fb0; font-weight: 600; }
-    #pp-panel .pp-empty { color: #999; font-style: italic; padding: 4px 0; }
-    #pp-panel .pp-hint { color: #888; font-size: 10px; margin: 4px 0 8px; font-style: italic; }
+    /* Grouped sections */
+    #pp-panel .pp-sec-title { display: flex; align-items: center; gap: 6px; margin: 18px 4px 6px; font-size: 13px; font-weight: 600; color: var(--pp-text); }
+    #pp-panel .pp-sec-title:empty { display: none; }
+    #pp-panel .pp-sec-title:first-child, #pp-panel .pp-sec-title:empty + .pp-sec { margin-top: 8px; }
+    #pp-panel .pp-sec-count { font-size: 11px; font-weight: 600; color: var(--pp-muted); background: var(--pp-field); border-radius: 10px; padding: 0 7px; line-height: 18px; }
+    #pp-panel .pp-card { background: var(--pp-card); border-radius: 14px; padding: 12px; }
+    #pp-panel .pp-card > :first-child { margin-top: 0 !important; }
+    #pp-panel .pp-card > :last-child { margin-bottom: 0 !important; }
+    #pp-panel h4 { margin: 14px 0 6px; font-size: 13px; font-weight: 600; color: var(--pp-text); }
+
+    #pp-panel ul { margin: 0; padding: 0; list-style: none; }
+    #pp-panel li { padding: 9px 0; border-bottom: 0.5px solid var(--pp-sep); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #pp-panel .pp-card li:first-child { padding-top: 2px; }
+    #pp-panel li:last-child { border-bottom: 0; padding-bottom: 2px; }
+    #pp-panel .pp-topic-name { display: flex; align-items: center; gap: 8px; }
+    #pp-panel .pp-score { font-weight: 600; font-variant-numeric: tabular-nums; }
+    #pp-panel .pp-fired { color: var(--pp-ok); font-weight: 600; }
+    #pp-panel .pp-empty { color: var(--pp-muted); padding: 4px 0; justify-content: center; }
+    #pp-panel .pp-hint { color: var(--pp-muted); font-size: 12px; margin: 6px 2px 0; }
+    #pp-panel .pp-hint:empty { display: none; }
+
+    /* Live rule rows: name + pill, then a progress bar */
+    #pp-panel li.pp-live-rule { display: block; }
+    #pp-panel .pp-live-rule__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #pp-panel .pp-live-rule__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #pp-panel .pp-pill { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: var(--pp-muted); background: var(--pp-field);
+      border-radius: 10px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
+    #pp-panel .pp-pill--ok { color: #fff; background: var(--pp-ok); }
+    #pp-panel .pp-bar { height: 4px; border-radius: 2px; background: var(--pp-field); margin-top: 8px; overflow: hidden; }
+    #pp-panel .pp-bar__fill { height: 100%; border-radius: 2px; background: var(--pp-accent); transition: width .3s ease; }
+    #pp-panel .pp-bar__fill.is-done { background: var(--pp-ok); }
+
+    /* Form controls */
+    #pp-panel input[type=text], #pp-panel input[type=number], #pp-panel input[type=password], #pp-panel input:not([type]),
+    #pp-panel select, #pp-panel textarea { font: 13px/1.3 var(--pp-font); color: var(--pp-text);
+      background: var(--pp-field); border: 1px solid transparent; border-radius: 9px; padding: 7px 10px; min-width: 0; outline: none;
+      transition: border-color .15s, background .15s; }
+    #pp-panel select { appearance: none; -webkit-appearance: none; padding-right: 26px; cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238e8e93' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; }
+    #pp-panel input:focus, #pp-panel select:focus, #pp-panel textarea:focus { background-color: #fff; border-color: var(--pp-accent); box-shadow: 0 0 0 3px var(--pp-accent-soft); }
+    #pp-panel input::placeholder, #pp-panel textarea::placeholder { color: #aeaeb2; }
 
     /* Persona picker row */
-    #pp-panel .pp-persona-row { display: flex; gap: 6px; align-items: center; margin: 4px 0 2px; position: relative; }
-    #pp-panel .pp-persona-lib { flex: 0 0 34px; height: 34px; padding: 0; background: #f6f6f2;
-      border: 1px solid #d8d8d8; border-radius: 4px; cursor: pointer; font: 700 14px/1 -apple-system, sans-serif;
-      color: #4d726d; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-    #pp-panel .pp-persona-lib:hover { background: #ebeae4; }
+    #pp-panel .pp-persona-row { display: flex; gap: 8px; align-items: center; position: relative; }
+    #pp-panel .pp-persona-lib { flex: 0 0 40px; height: 40px; padding: 0; background: var(--pp-field);
+      border: 0; border-radius: 50%; cursor: pointer; font: 600 13px/1 -apple-system, sans-serif;
+      color: var(--pp-accent); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    #pp-panel .pp-persona-lib:hover { background: rgba(118,118,128,0.2); }
     #pp-panel .pp-persona-preview { width: 100%; height: 100%; object-fit: cover; display: block; }
-    #pp-panel .pp-persona-input { flex: 1; padding: 8px; font-size: 11px; border: 1px solid #d8d8d8; border-radius: 4px; background: #fff; color: #222; }
-    #pp-panel .pp-persona-clear { flex: 0 0 24px; height: 28px; padding: 0; background: transparent; border: 0; color: #b03a2e; font-size: 16px; cursor: pointer; }
-    #pp-panel .pp-persona-clear:hover { color: #7a281f; }
+    #pp-panel .pp-persona-input { flex: 1; }
+    #pp-panel .pp-persona-clear { flex: 0 0 24px; height: 24px; padding: 0; background: var(--pp-field); border: 0; border-radius: 50%;
+      color: var(--pp-muted); font-size: 15px; line-height: 24px; cursor: pointer; }
+    #pp-panel .pp-persona-clear:hover { color: var(--pp-danger); }
     /* Popover of avatar choices */
-    #pp-panel .pp-persona-popover { position: absolute; top: 100%; left: 0; margin-top: 6px; background: #fff;
-      border: 1px solid #d8d8d8; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); padding: 8px;
-      z-index: 10; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; min-width: 200px; }
+    #pp-panel .pp-persona-popover { position: absolute; top: 100%; left: 0; margin-top: 8px; background: #fff;
+      border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,0.18), 0 0 0 0.5px rgba(0,0,0,0.06); padding: 10px;
+      z-index: 10; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; min-width: 220px; }
     #pp-panel .pp-persona-choice { display: flex; flex-direction: column; align-items: center; gap: 4px;
-      cursor: pointer; padding: 4px 2px 6px; border-radius: 4px; border: 1px solid transparent; }
-    #pp-panel .pp-persona-choice:hover { background: #f6f6f2; border-color: #d8d8d8; }
+      cursor: pointer; padding: 6px 2px; border-radius: 10px; border: 0; background: transparent; }
+    #pp-panel .pp-persona-choice:hover { background: var(--pp-bg); }
     #pp-panel .pp-persona-choice img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
-    #pp-panel .pp-persona-choice span { font-size: 10px; color: #333; }
-    #pp-panel .pp-url { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-    #pp-panel .pp-current-url { background: #f7f7f7; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; }
-    #pp-panel .pp-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
-    #pp-panel .pp-row select, #pp-panel .pp-row input { flex: 1; padding: 6px 8px; font-size: 12px;
-      border: 1px solid #d8d8d8; border-radius: 4px; background: #fff; color: #222; }
-    #pp-panel .pp-row input.pp-weight { flex: 0 0 60px; }
-    #pp-panel .pp-row input.pp-kind { flex: 0 0 80px; }
-    #pp-panel button.pp-btn { padding: 6px 10px; font-size: 11px; font-weight: 600;
-      text-transform: uppercase; letter-spacing: 1px; cursor: pointer; border: 1px solid #4d726d;
-      background: #fff; color: #4d726d; border-radius: 4px; }
-    #pp-panel button.pp-btn:hover { background: #4d726d; color: #fff; }
-    #pp-panel button.pp-btn--full { width: 100%; margin-top: 6px; }
-    #pp-panel button.pp-btn--danger { border-color: #b03a2e; color: #b03a2e; }
-    #pp-panel button.pp-btn--danger:hover { background: #b03a2e; color: #fff; }
-    #pp-panel button.pp-btn--sm { padding: 3px 6px; font-size: 10px; letter-spacing: 0.5px; }
-    #pp-panel button.pp-icon { background: transparent; border: 0; color: #999; cursor: pointer; font-size: 14px; padding: 0 2px; }
-    #pp-panel button.pp-icon:hover { color: #b03a2e; }
-    #pp-panel .pp-actions-row { display: flex; gap: 6px; margin-top: 8px; }
-    #pp-panel .pp-actions-row .pp-btn { flex: 1; }
-    #pp-panel .pp-topic-edit { flex: 1; padding: 4px 6px; font-size: 12px; border: 1px solid transparent; background: transparent; }
-    #pp-panel .pp-topic-edit:focus { outline: none; border-color: #4d726d; background: #fff; }
-    #pp-panel .pp-rule-body { flex: 1; min-width: 0; }
-    #pp-panel .pp-rule-body input { width: 100%; padding: 3px 5px; font-size: 11px; border: 1px solid #eee; border-radius: 3px; }
-    #pp-panel .pp-rule-meta { font-size: 10px; color: #888; margin-top: 2px; }
-    #pp-panel details { margin-top: 8px; }
-    #pp-panel details summary { cursor: pointer; font-size: 11px; color: #666; padding: 4px 0; }
-    #pp-panel textarea.pp-json { width: 100%; height: 120px; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
-      border: 1px solid #d8d8d8; border-radius: 4px; padding: 6px; box-sizing: border-box; margin-top: 4px; }
-    #pp-panel textarea.pp-code { width: 100%; height: 90px; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
-      border: 1px solid #d8d8d8; border-radius: 4px; padding: 6px; box-sizing: border-box; margin-top: 4px; }
+    #pp-panel .pp-persona-choice span { font-size: 11px; color: var(--pp-text); }
+    #pp-panel .pp-url { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    #pp-panel .pp-current-url { background: var(--pp-field); padding: 7px 10px; border-radius: 9px; margin-bottom: 8px; color: #3c3c43; }
+    #pp-panel .pp-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    #pp-panel .pp-card > .pp-row:last-child { margin-bottom: 0; }
+    #pp-panel .pp-card > ul + .pp-row, #pp-panel .pp-card > ul + .pp-btn { margin-top: 10px; }
+    #pp-panel .pp-row select, #pp-panel .pp-row input { flex: 1; }
+    #pp-panel .pp-row input.pp-weight { flex: 0 0 64px; }
+    #pp-panel .pp-row input.pp-kind { flex: 0 0 84px; }
 
-    #pp-panel .pp-thr-rule { display: block; padding: 8px; border: 1px solid #e5e5e5; border-radius: 6px; margin-bottom: 8px; background: #fafafa; }
-    #pp-panel .pp-thr-rule + .pp-thr-rule { margin-top: 8px; }
-    #pp-panel .pp-thr-rule .pp-thr-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
-    #pp-panel .pp-thr-rule .pp-thr-header input { flex: 1; padding: 4px 6px; font-size: 12px; font-weight: 600; border: 1px solid transparent; background: transparent; }
-    #pp-panel .pp-thr-rule .pp-thr-header input:focus { border-color: #4d726d; background: #fff; outline: none; }
+    /* Buttons: tinted pills; primary = filled */
+    #pp-panel button.pp-btn { padding: 8px 14px; font: 600 13px/1.2 var(--pp-font); letter-spacing: -0.01em;
+      cursor: pointer; border: 0; background: var(--pp-accent-soft); color: var(--pp-accent); border-radius: 10px;
+      transition: background .15s, transform .06s; white-space: nowrap; }
+    #pp-panel button.pp-btn:hover { background: rgba(0,122,255,0.16); }
+    #pp-panel button.pp-btn:active { transform: scale(0.98); }
+    #pp-panel button.pp-btn:disabled { opacity: 0.55; cursor: default; }
+    #pp-panel button.pp-btn--primary { background: var(--pp-accent); color: #fff; }
+    #pp-panel button.pp-btn--primary:hover { background: #0a6fe6; }
+    #pp-panel button.pp-btn--full { width: 100%; margin-top: 8px; padding: 10px 14px; }
+    #pp-panel .pp-card > button.pp-btn--full:first-child { margin-top: 0; }
+    #pp-panel button.pp-btn--danger { background: var(--pp-danger-soft); color: var(--pp-danger); }
+    #pp-panel button.pp-btn--danger:hover { background: rgba(255,59,48,0.16); }
+    #pp-panel button.pp-btn--sm { padding: 7px 12px; font-size: 12px; }
+    #pp-panel button.pp-icon { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; background: transparent; border: 0;
+      color: #c7c7cc; cursor: pointer; font-size: 16px; line-height: 22px; padding: 0; text-align: center; }
+    #pp-panel button.pp-icon:hover { color: var(--pp-danger); background: var(--pp-danger-soft); }
+    #pp-panel .pp-actions-row { display: flex; gap: 8px; margin-top: 12px; }
+    #pp-panel .pp-card > .pp-actions-row:first-child { margin-top: 0; }
+    #pp-panel .pp-actions-row .pp-btn { flex: 1; }
+    #pp-panel .pp-topic-edit { flex: 1; background: transparent !important; padding: 4px 6px !important; margin-left: -6px; }
+    #pp-panel .pp-topic-edit:focus { background: #fff !important; }
+    #pp-panel .pp-rule-body { flex: 1; min-width: 0; }
+    #pp-panel .pp-rule-body > input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    #pp-panel .pp-rule-meta { font-size: 12px; color: var(--pp-muted); margin-top: 6px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    #pp-panel .pp-rule-meta select, #pp-panel .pp-rule-meta input { font-size: 12px; padding: 4px 8px; }
+    #pp-panel .pp-rule-meta select { padding-right: 22px; background-position: right 7px center; }
+    #pp-panel .pp-here { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--pp-accent); background: var(--pp-accent-soft); border-radius: 10px; padding: 1px 8px; }
+    #pp-panel .pp-tag-add { margin-top: 10px; padding-top: 10px; border-top: 0.5px solid var(--pp-sep); }
+    #pp-panel .pp-tag-add__label { font-size: 12px; color: var(--pp-muted); margin-bottom: 6px; }
+    #pp-panel .pp-tag-add__label .pp-url { color: var(--pp-text); }
+    #pp-panel .pp-tag-add .pp-row { margin-bottom: 0; }
+
+    /* Checkbox rows render as iOS switches */
+    #pp-panel .pp-check { display: flex; align-items: center; justify-content: space-between; flex-direction: row-reverse; gap: 10px;
+      font-size: 13px; color: var(--pp-text); margin: 10px 0 2px; cursor: pointer; }
+    #pp-panel .pp-check input { appearance: none; -webkit-appearance: none; flex: 0 0 42px; width: 42px; height: 26px; margin: 0;
+      border-radius: 13px; background: #e9e9eb; position: relative; cursor: pointer; transition: background .2s; border: 0; padding: 0; box-shadow: none; }
+    #pp-panel .pp-check input::before { content: ''; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%;
+      background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.2); transition: transform .2s; }
+    #pp-panel .pp-check input:checked { background: var(--pp-ok); }
+    #pp-panel .pp-check input:checked::before { transform: translateX(16px); }
+    #pp-panel .pp-check input:focus { box-shadow: none; border: 0; }
+
+    #pp-panel details { margin-top: 12px; }
+    #pp-panel details summary { cursor: pointer; font-size: 12px; color: var(--pp-muted); padding: 4px 0; list-style-position: inside; }
+    #pp-panel textarea.pp-json, #pp-panel textarea.pp-code { width: 100%; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin-top: 6px; resize: vertical; }
+    #pp-panel textarea.pp-json { height: 140px; }
+    #pp-panel textarea.pp-code { height: 96px; }
+    #pp-panel textarea.pp-intent { font: 13px/1.4 var(--pp-font); }
+
+    /* Threshold-rule editor: each rule is its own card */
+    #pp-panel .pp-thr-rule { display: block; padding: 10px 12px 12px; border-radius: 14px; margin-bottom: 10px; background: var(--pp-card); }
+    #pp-panel .pp-thr-rule .pp-thr-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    #pp-panel .pp-thr-rule:not(.is-collapsed) .pp-thr-header { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 0.5px solid var(--pp-sep); }
     /* Collapse chevron */
-    #pp-panel .pp-thr-rule .pp-thr-chevron { flex: 0 0 20px; padding: 2px 0 0; background: transparent; border: 0; color: #666; cursor: pointer; font-size: 12px; }
-    #pp-panel .pp-thr-rule .pp-thr-chevron:hover { color: #4d726d; }
+    #pp-panel .pp-thr-rule .pp-thr-chevron { flex: 0 0 22px; height: 22px; padding: 0; background: transparent; border: 0; color: var(--pp-muted); cursor: pointer; font-size: 12px; border-radius: 6px; }
+    #pp-panel .pp-thr-rule .pp-thr-chevron:hover { color: var(--pp-accent); background: var(--pp-accent-soft); }
     /* Multi-line description */
-    #pp-panel .pp-thr-rule .pp-thr-desc { flex: 1; padding: 4px 6px; font: 600 12px/1.35 -apple-system, sans-serif;
-      border: 1px solid transparent; background: transparent; resize: none; overflow: hidden; box-sizing: border-box;
-      min-height: 22px; max-height: 62px; }
-    #pp-panel .pp-thr-rule .pp-thr-desc:focus { border-color: #4d726d; background: #fff; outline: none; }
+    #pp-panel .pp-thr-rule textarea.pp-thr-desc { flex: 1; padding: 4px 6px; font: 600 14px/1.3 var(--pp-font);
+      background: transparent; resize: none; overflow: hidden; min-height: 24px; max-height: 62px; border-radius: 7px; }
+    #pp-panel .pp-thr-rule textarea.pp-thr-desc:focus { background: var(--pp-field); box-shadow: none; border-color: transparent; }
     /* Collapsed rule hides the body */
     #pp-panel .pp-thr-rule.is-collapsed .pp-thr-body { display: none; }
-    #pp-panel .pp-thr-rule.is-collapsed { padding-bottom: 6px; }
-    #pp-panel .pp-thr-field { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-    #pp-panel .pp-thr-field label { flex: 0 0 68px; font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-    #pp-panel .pp-thr-field input, #pp-panel .pp-thr-field select { flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid #d8d8d8; border-radius: 3px; background: #fff; }
-    #pp-panel .pp-thr-field input[type=number] { flex: 0 0 60px; }
-    #pp-panel .pp-thr-actions { display: flex; gap: 6px; margin-top: 6px; }
+    #pp-panel .pp-thr-field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    #pp-panel .pp-thr-field label { flex: 0 0 72px; font-size: 13px; color: var(--pp-muted); }
+    #pp-panel .pp-thr-field input, #pp-panel .pp-thr-field select { flex: 1; }
+    #pp-panel .pp-thr-field input[type=number] { flex: 0 0 64px; }
+    #pp-panel .pp-thr-body > .pp-rule-meta, #pp-panel .pp-thr-body > div > .pp-rule-meta:first-child { margin: 4px 0 6px; }
+    #pp-panel .pp-thr-actions { display: flex; gap: 8px; margin-top: 10px; }
     #pp-panel .pp-thr-actions .pp-btn { flex: 1; }
 
     /* Pick-element overlay \u2014 a fixed div on top of the current hovered element */
-    #pp-pick-overlay { position: fixed; pointer-events: none; z-index: 2147483645;
+    /* Picker + gallery use the panel's max z-index; appended after it, so they paint on top. */
+    #pp-pick-overlay { position: fixed; pointer-events: none; z-index: 2147483647;
       border: 2px solid #ff6b3d; background: rgba(255,107,61,0.12); transition: all 60ms linear; }
-    #pp-pick-hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 2147483646;
+    #pp-pick-hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 2147483647;
       background: #222; color: #fff; padding: 10px 16px; border-radius: 6px;
       font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
     #pp-pick-hint kbd { background: #444; padding: 2px 6px; border-radius: 3px; font-family: inherit; margin: 0 2px; }
     body.pp-picking, body.pp-picking * { cursor: crosshair !important; }
 
-    #personalise-popup .pp-popup__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2147483643; }
+    /* Visitor popups share the panel's max z-index and are kept after it in the DOM (see renderPanel). */
+    #personalise-popup .pp-popup__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2147483647; }
     #personalise-popup .pp-popup__box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-      z-index: 2147483644; background: #fff; padding: 32px; max-width: 420px; border-radius: 8px;
+      z-index: 2147483647; background: #fff; padding: 32px; max-width: 420px; border-radius: 8px;
       font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
     #personalise-popup .pp-popup__box h3 { margin: 0 0 12px; font: italic 1.4rem "Merriweather", Georgia, serif; }
     #personalise-popup .pp-popup__close { position: absolute; top: 8px; right: 12px; background: transparent;
@@ -963,9 +1040,9 @@
 
     /* AI-designed popup shell. We own backdrop/box/close; model HTML+CSS lives
        inside .pp-rp__content (its CSS is scoped to .pp-rp__box by scopeCss). */
-    #personalise-richpopup .pp-rp__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2147483643; }
+    #personalise-richpopup .pp-rp__backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 2147483647; }
     #personalise-richpopup .pp-rp__box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-      z-index: 2147483644; background: #fff; width: min(460px, 92vw); max-height: 88vh; overflow: auto;
+      z-index: 2147483647; background: #fff; width: min(460px, 92vw); max-height: 88vh; overflow: auto;
       border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.4); padding: 28px; box-sizing: border-box;
       font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222; }
     #personalise-richpopup .pp-rp__close { position: absolute; top: 8px; right: 12px; background: transparent;
@@ -985,29 +1062,24 @@
     [id^="personalise-recstrip-"] .pp-rs__line { margin-top: 4px; }
 
     /* Per-card editor block in the panel */
-    #pp-panel .pp-rs-cardedit { border: 1px solid #eee; border-radius: 6px; padding: 6px; margin-bottom: 6px; background: #fff; }
+    #pp-panel .pp-rs-cardedit { border-radius: 12px; padding: 8px; margin-bottom: 8px; background: var(--pp-bg); }
 
-    /* Trainer toggle + pulse overlays */
-    #pp-panel .pp-trainer-row { display: flex; align-items: center; justify-content: space-between;
-      gap: 8px; padding: 8px 10px; background: #f7f7f2; border: 1px solid #eee; border-radius: 6px; margin-bottom: 12px; }
-    #pp-panel .pp-trainer-row label { font-weight: 600; font-size: 11px; color: #444;
-      text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; user-select: none; }
-    #pp-panel .pp-trainer-row .pp-trainer-hint { display: block; color: #888; font-size: 10px;
-      font-weight: 400; text-transform: none; letter-spacing: 0; margin-top: 2px; }
-    /* Simple pill toggle */
-    #pp-panel .pp-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: 0 0 40px; }
+    /* Trainer row (inside its card) + iOS switch */
+    #pp-panel .pp-trainer-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    #pp-panel .pp-trainer-row label { font-size: 14px; font-weight: 500; color: var(--pp-text); cursor: pointer; user-select: none; }
+    #pp-panel .pp-switch { position: relative; display: inline-block; width: 51px; height: 31px; flex: 0 0 51px; }
     #pp-panel .pp-switch input { opacity: 0; width: 0; height: 0; }
-    #pp-panel .pp-switch .pp-slider { position: absolute; inset: 0; background: #ccc; border-radius: 22px; transition: 0.2s; cursor: pointer; }
-    #pp-panel .pp-switch .pp-slider::before { content: ''; position: absolute; height: 16px; width: 16px;
-      left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
-    #pp-panel .pp-switch input:checked + .pp-slider { background: #4d726d; }
-    #pp-panel .pp-switch input:checked + .pp-slider::before { transform: translateX(18px); }
+    #pp-panel .pp-switch .pp-slider { position: absolute; inset: 0; background: #e9e9eb; border-radius: 31px; transition: 0.2s; cursor: pointer; }
+    #pp-panel .pp-switch .pp-slider::before { content: ''; position: absolute; height: 27px; width: 27px;
+      left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 3px 8px rgba(0,0,0,0.15), 0 1px 1px rgba(0,0,0,0.16); }
+    #pp-panel .pp-switch input:checked + .pp-slider { background: var(--pp-ok); }
+    #pp-panel .pp-switch input:checked + .pp-slider::before { transform: translateX(20px); }
 
     /* Legend of topic colors when trainer is on */
-    #pp-panel .pp-trainer-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
-    #pp-panel .pp-trainer-legend li { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 5px;
-      border-radius: 3px; font-size: 10px; color: #333; background: #f7f7f2; border: 1px solid #eee; }
-    #pp-panel .pp-trainer-legend .pp-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+    #pp-panel .pp-trainer-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+    #pp-panel .pp-trainer-legend li { display: flex; align-items: center; gap: 5px; padding: 3px 9px 3px 6px; border: 0;
+      border-radius: 10px; font-size: 12px; color: var(--pp-text); background: var(--pp-bg); }
+    #pp-panel .pp-swatch { display: inline-block; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
 
     /* Pulse outlines are added directly to matching <a> elements */
     @keyframes pp-pulse {
@@ -1022,9 +1094,10 @@
       z-index: 2147483640; white-space: nowrap; }
 
     /* AI-author modal */
-    #pp-ai-modal .pp-ai-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483643; }
+    /* Same max z-index as #pp-panel; appended after it, so the modal paints on top. */
+    #pp-ai-modal .pp-ai-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483647; }
     #pp-ai-modal .pp-ai-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-      z-index: 2147483644; background: #fff; padding: 24px 28px; width: min(680px, 92vw); max-height: 88vh;
+      z-index: 2147483647; background: #fff; padding: 24px 28px; width: min(680px, 92vw); max-height: 88vh;
       overflow-y: auto; border-radius: 10px;
       font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222;
       box-shadow: 0 20px 60px rgba(0,0,0,0.4); }
@@ -1036,18 +1109,18 @@
       border: 1px solid #d0d0d0; border-radius: 6px; resize: vertical; background: #fafafa; color: #222; box-sizing: border-box; }
     #pp-ai-modal textarea:focus { outline: 0; border-color: #4d726d; background: #fff; }
     #pp-ai-modal .pp-ai-row { display: flex; gap: 8px; margin-top: 8px; }
-    #pp-ai-modal .pp-btn { padding: 8px 16px; font-size: 12px; font-weight: 600;
-      text-transform: uppercase; letter-spacing: 0.6px; cursor: pointer; border: 1px solid #4d726d;
-      background: #fff; color: #4d726d; border-radius: 4px; }
-    #pp-ai-modal .pp-btn:hover { background: #4d726d; color: #fff; }
+    #pp-ai-modal .pp-btn { padding: 9px 16px; font: 600 13px/1.2 -apple-system, "Segoe UI", Roboto, sans-serif;
+      cursor: pointer; border: 0; background: rgba(0,122,255,0.10); color: #007aff; border-radius: 10px; }
+    #pp-ai-modal .pp-btn:hover { background: rgba(0,122,255,0.16); }
     #pp-ai-modal .pp-ai-close { position: absolute; top: 10px; right: 14px; background: transparent;
       border: 0; font-size: 26px; cursor: pointer; color: #888; line-height: 1; }
     #pp-ai-modal .pp-ai-close:hover { color: #222; }
+    #pp-ai-modal .pp-ai-err { color: #b03a2e; font-size: 12px; margin-top: 6px; }
 
     /* Visual image gallery picker */
-    #pp-image-gallery .pp-ig-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483643; }
+    #pp-image-gallery .pp-ig-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2147483647; }
     #pp-image-gallery .pp-ig-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-      z-index: 2147483644; background: #fff; width: min(760px, 94vw); max-height: 86vh; overflow: hidden;
+      z-index: 2147483647; background: #fff; width: min(760px, 94vw); max-height: 86vh; overflow: hidden;
       border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.4); display: flex; flex-direction: column;
       font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222; }
     #pp-image-gallery .pp-ig-head { display: flex; align-items: center; justify-content: space-between;
@@ -1257,7 +1330,7 @@
 
   function applyPositionToPanel(panel) {
     if (ui.pos && typeof ui.pos.left === 'number' && typeof ui.pos.top === 'number') {
-      const w = panel.offsetWidth || (ui.collapsed ? 56 : 340);
+      const w = panel.offsetWidth || (ui.collapsed ? 56 : 380);
       const h = panel.offsetHeight || 400;
       // Clamp to viewport so a resize doesn't strand it off-screen
       const maxLeft = Math.max(0, window.innerWidth - w);
@@ -1270,6 +1343,19 @@
 
   const PP_MIN_W = 300, PP_MIN_H = 240;
 
+  // Re-fit the saved size/position when the viewport changes (window resize, or
+  // a background tab becoming visible) so the panel is never stranded.
+  let __ppRefitTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(__ppRefitTimer);
+    __ppRefitTimer = setTimeout(() => {
+      const panel = document.getElementById('pp-panel');
+      if (!panel) return;
+      applySizeToPanel(panel);
+      applyPositionToPanel(panel);
+    }, 100);
+  });
+
   function applySizeToPanel(panel) {
     if (ui.collapsed) {
       // Never apply saved size to the collapsed badge
@@ -1278,8 +1364,10 @@
       return;
     }
     if (ui.size && typeof ui.size.w === 'number' && typeof ui.size.h === 'number') {
-      const w = Math.min(Math.max(PP_MIN_W, ui.size.w), window.innerWidth);
-      const h = Math.min(Math.max(PP_MIN_H, ui.size.h), window.innerHeight);
+      // Cap at the viewport, but never below the minimum: a page loaded in a
+      // hidden/background tab reports innerWidth 0 and would shrink us to nothing.
+      const w = Math.min(Math.max(PP_MIN_W, ui.size.w), Math.max(PP_MIN_W, window.innerWidth));
+      const h = Math.min(Math.max(PP_MIN_H, ui.size.h), Math.max(PP_MIN_H, window.innerHeight));
       panel.style.width = w + 'px';
       panel.style.height = h + 'px';
       panel.classList.add('is-sized');
@@ -1422,10 +1510,17 @@
       document.head.appendChild(style);
       panel = el('div', { id: 'pp-panel' });
       document.body.appendChild(panel);
+      // Rules fire before the first render, so a popup opened on load sits
+      // before the panel; move it after so it paints on top at equal z-index.
+      for (const id of ['personalise-popup', 'personalise-richpopup']) {
+        const pop = document.getElementById(id);
+        if (pop) document.body.appendChild(pop);
+      }
     }
     if (ui.collapsed) panel.classList.add('is-collapsed');
     else panel.classList.remove('is-collapsed');
-    if (ui.collapsed && config.avatarUrl) panel.classList.add('has-avatar');
+    const showAvatar = avatarVisible();
+    if (ui.collapsed && showAvatar) panel.classList.add('has-avatar');
     else panel.classList.remove('has-avatar');
 
     // Preserve the body's scroll position across the full rebuild so adding a
@@ -1441,7 +1536,7 @@
 
     // Collapsed content: Salesforce cloud badge OR persona avatar + expand (+) button
     const badge = el('div', { className: 'pp-badge-content' });
-    if (config.avatarUrl) {
+    if (showAvatar) {
       const img = document.createElement('img');
       img.src = config.avatarUrl;
       img.alt = 'Persona avatar';
@@ -1456,10 +1551,10 @@
 
     // Expanded content: title + client + collapse (\u2212) button
     const expandedHeader = el('div', { className: 'pp-expanded-header' });
-    const headerLeft = el('div');
+    const headerLeft = el('div', { className: 'pp-title' });
     headerLeft.appendChild(el('strong', { text: 'Personalise' }));
     headerLeft.appendChild(el('div', { id: 'pp-panel__client', text: config.client }));
-    const toggleBtn = el('button', { id: 'pp-panel__toggle', ariaLabel: 'Minimise', text: '\u2212' });
+    const toggleBtn = el('button', { id: 'pp-panel__toggle', ariaLabel: 'Minimise', title: 'Minimise', text: '\u2212' });
     expandedHeader.appendChild(headerLeft);
     expandedHeader.appendChild(toggleBtn);
     header.appendChild(expandedHeader);
@@ -1467,16 +1562,20 @@
 
     const body = el('div', { id: 'pp-panel__body' });
 
-    // Mode tabs
+    // Segmented control: Live (runtime) / Build (config) / Settings. Sits in the
+    // fixed header so it stays put while the body scrolls.
+    if (!['runtime', 'config', 'settings'].includes(ui.mode)) ui.mode = 'runtime';
     const tabs = el('div', { className: 'pp-mode-tabs' });
-    const runtimeTab = el('button', { className: 'pp-mode-tab' + (ui.mode === 'runtime' ? ' is-active' : ''), text: 'Runtime' });
-    const configTab = el('button', { className: 'pp-mode-tab' + (ui.mode === 'config' ? ' is-active' : ''), text: 'Config' });
-    tabs.appendChild(runtimeTab);
-    tabs.appendChild(configTab);
-    body.appendChild(tabs);
+    for (const [mode, label] of [['runtime', 'Live'], ['config', 'Build'], ['settings', 'Settings']]) {
+      const tab = el('button', { className: 'pp-mode-tab' + (ui.mode === mode ? ' is-active' : ''), text: label });
+      tab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = mode; saveUi(); renderPanel(); });
+      tabs.appendChild(tab);
+    }
+    panel.appendChild(tabs);
 
     if (ui.mode === 'runtime') renderRuntime(body);
-    else renderConfig(body);
+    else if (ui.mode === 'settings') renderSettings(body);
+    else renderBuild(body);
 
     panel.appendChild(body);
 
@@ -1504,8 +1603,6 @@
     attachDrag(panel, header);
     toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.collapsed = true; saveUi(); renderPanel(); });
     expandBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.collapsed = false; saveUi(); renderPanel(); });
-    runtimeTab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = 'runtime'; saveUi(); renderPanel(); });
-    configTab.addEventListener('click', (e) => { e.stopPropagation(); ui.mode = 'config'; saveUi(); renderPanel(); });
   }
 
   // -------------------- Runtime view --------------------
@@ -1616,12 +1713,12 @@
 
   function renderRuntime(body) {
     // Trainer toggle -- sits at the very top of Runtime so it's immediate.
+    const trainerCard = section(body, '');
     const trainerRow = el('div', { className: 'pp-trainer-row' });
+    trainerRow.title = 'Highlight scoring links on the page';
     const label = document.createElement('label');
     label.htmlFor = 'pp-trainer-toggle';
     label.appendChild(document.createTextNode('Trainer mode'));
-    const hint = el('span', { className: 'pp-trainer-hint', text: 'Highlight scoring links on the page' });
-    label.appendChild(hint);
     // Wrap the switch in a <label> so clicking the pill toggles the checkbox
     // even though the checkbox itself is visually hidden.
     const sw = document.createElement('label');
@@ -1634,7 +1731,7 @@
     sw.appendChild(slider);
     trainerRow.appendChild(label);
     trainerRow.appendChild(sw);
-    body.appendChild(trainerRow);
+    trainerCard.appendChild(trainerRow);
 
     // Legend (only when trainer is on and there are topics with URL rules)
     if (ui.trainer && config.topics.length) {
@@ -1650,7 +1747,7 @@
           li.appendChild(document.createTextNode(t.label));
           legend.appendChild(li);
         }
-        body.appendChild(legend);
+        trainerCard.appendChild(legend);
       }
     }
 
@@ -1661,33 +1758,43 @@
       renderPanel();
     });
 
-    body.appendChild(el('h4', { text: 'Tag scores' }));
+    const scoreCard = section(body, 'Topic scores');
     const tagList = el('ul');
     if (!config.topics.length) tagList.appendChild(el('li', { className: 'pp-empty', text: 'No topics yet' }));
     else {
       for (const t of config.topics) {
         const li = el('li');
-        li.appendChild(el('span', { text: t.label }));
+        const name = el('span', { className: 'pp-topic-name' });
+        const dot = el('span', { className: 'pp-swatch' }); dot.style.background = topicColor(t.id);
+        name.appendChild(dot); name.appendChild(document.createTextNode(t.label));
+        li.appendChild(name);
         li.appendChild(el('span', { className: 'pp-score', text: String(state.scores[t.id] || 0) }));
         tagList.appendChild(li);
       }
     }
-    body.appendChild(tagList);
+    scoreCard.appendChild(tagList);
 
-    body.appendChild(el('h4', { text: 'Threshold rules' }));
+    const rulesCard = section(body, 'Rules');
     const ruleList = el('ul');
-    if (!config.thresholdRules.length) ruleList.appendChild(el('li', { className: 'pp-empty', text: 'No threshold rules configured' }));
+    if (!config.thresholdRules.length) ruleList.appendChild(el('li', { className: 'pp-empty', text: 'No rules yet — add them in Build' }));
     else {
       for (const r of config.thresholdRules) {
-        const li = el('li');
+        const li = el('li', { className: 'pp-live-rule' });
         const score = state.scores[r.topicId] || 0;
         const fired = state.firedRules.includes(r.id);
-        li.appendChild(el('span', { text: r.description || r.id }));
-        li.appendChild(el('span', { className: fired ? 'pp-fired' : '', text: fired ? 'FIRED' : `${score} / ${r.threshold}` }));
+        const top = el('div', { className: 'pp-live-rule__top' });
+        top.appendChild(el('span', { className: 'pp-live-rule__name', text: r.description || r.id }));
+        top.appendChild(el('span', { className: fired ? 'pp-pill pp-pill--ok' : 'pp-pill', text: fired ? 'Fired' : `${score} / ${r.threshold}` }));
+        li.appendChild(top);
+        const bar = el('div', { className: 'pp-bar' });
+        const fill = el('div', { className: 'pp-bar__fill' + (fired ? ' is-done' : '') });
+        fill.style.width = (fired ? 100 : Math.max(0, Math.min(100, r.threshold ? (score / r.threshold) * 100 : 0))) + '%';
+        bar.appendChild(fill);
+        li.appendChild(bar);
         ruleList.appendChild(li);
       }
     }
-    body.appendChild(ruleList);
+    rulesCard.appendChild(ruleList);
 
     const actionsRow = el('div', { className: 'pp-actions-row' });
     const runBtn = el('button', { className: 'pp-btn', text: 'Re-evaluate' });
@@ -1806,7 +1913,11 @@
     const actField = el('div', { className: 'pp-thr-field' });
     actField.appendChild(el('label', { text: 'Do' }));
     const actSel = document.createElement('select');
-    for (const [val, label] of [['swapImage', 'Swap image'], ['popup', 'Show popup'], ['richPopup', 'Popup (AI-designed)'], ['recStrip', 'Recommendations strip'], ['runScript', 'Run script']]) {
+    // The simple fixed-template popup is superseded by the AI-designed one; only
+    // list it for a saved rule that still uses it, so that rule keeps its type.
+    const actionTypes = [['swapImage', 'Swap image'], ['richPopup', 'Popup (AI-designed)'], ['recStrip', 'Recommendations strip'], ['runScript', 'Run script']];
+    if (rule.action.type === 'popup') actionTypes.splice(1, 0, ['popup', 'Simple popup (legacy)']);
+    for (const [val, label] of actionTypes) {
       const o = document.createElement('option'); o.value = val; o.textContent = label;
       if (rule.action.type === val) o.selected = true;
       actSel.appendChild(o);
@@ -1882,7 +1993,7 @@
         vidInput.addEventListener('change', () => { rule.action.video = vidInput.value; saveConfig(); });
         vidField.appendChild(vidInput);
         wrap.appendChild(vidField);
-        wrap.appendChild(el('div', { className: 'pp-hint', text: 'This target is a video \u2014 replace it with a video file (.mp4). It autoplays muted.' }));
+        wrap.appendChild(el('div', { className: 'pp-hint', text: 'Video target \u2014 use an .mp4 (plays muted).' }));
       } else {
         const imgField = el('div', { className: 'pp-thr-field' });
         imgField.appendChild(el('label', { text: 'Image URL' }));
@@ -1930,8 +2041,7 @@
     } else if (rule.action.type === 'richPopup') {
       // Describe-it → gateway designs HTML+CSS. SE can also hand-edit/paste.
       const intentField = el('div');
-      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the popup — the gateway designs brand-matched HTML + CSS (mention a form if you want one). Verifies URLs as it goes — can take a bit.' }));
-      const intentArea = el('textarea', { className: 'pp-code' });
+      const intentArea = el('textarea', { className: 'pp-code pp-intent' });
       intentArea.style.height = '48px';
       intentArea.value = rule.action.intent || '';
       intentArea.placeholder = 'e.g. Luxury concierge offer with an email signup form';
@@ -1940,22 +2050,37 @@
       intentField.appendChild(intentArea);
       wrap.appendChild(intentField);
 
-      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: '✨ Design with gateway' });
+      // Identification moment: avatar stays hidden until this popup's form is submitted.
+      const revealLabel = el('label', { className: 'pp-check' });
+      const revealInput = document.createElement('input');
+      revealInput.type = 'checkbox'; revealInput.checked = !!rule.action.revealAvatar;
+      revealInput.addEventListener('change', () => { rule.action.revealAvatar = revealInput.checked; saveConfig(); renderPanel(); });
+      revealLabel.appendChild(revealInput);
+      revealLabel.appendChild(document.createTextNode('Reveals persona avatar on form submit'));
+      wrap.appendChild(revealLabel);
+      if (rule.action.revealAvatar) {
+        wrap.appendChild(el('div', { className: 'pp-rule-meta', text: !config.avatarUrl
+          ? 'No persona avatar set yet — pick one under Config → Persona avatar.'
+          : config.avatarHidden
+            ? 'Submitting this form reveals the hidden persona avatar.'
+            : 'Avatar is already visible — tick “Hide until identified” under Persona avatar to hide it first.' }));
+      }
+
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Design with gateway') });
       wrap.appendChild(designBtn);
-      const designStatus = el('div', { className: 'pp-hint', text: rule.action.html ? 'Design ready — Test now to preview.' : (gatewayKey() ? 'Gateway: ' + gatewayBaseUrl() : 'No gateway key — set it above, or paste HTML/CSS below.') });
+      const designStatus = el('div', { className: 'pp-hint', text: rule.action.html ? '\u2713 Design ready \u2014 Test now to preview' : '' });
       wrap.appendChild(designStatus);
       designBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         rule.action.intent = intentArea.value;
-        if (!gatewayKey()) { alert('No gateway key set — add it in the Claude Gateway section above, or paste HTML/CSS in Advanced.'); return; }
-        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = 'Designing…';
+        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = gatewayKey() ? 'Designing…' : 'Waiting for answer…';
         try {
           const out = await gatewayDesignPopup(rule.action.intent);
           rule.action.html = out.html; rule.action.css = out.css || '';
           saveConfig(); renderPanel();
         } catch (err) {
           designBtn.disabled = false; designBtn.textContent = orig;
-          designStatus.textContent = '✗ ' + err.message;
+          if (!isCancelled(err)) designStatus.textContent = '✗ ' + err.message;
         }
       });
 
@@ -1980,8 +2105,7 @@
       if (!rule.action.mode) rule.action.mode = 'replace';
 
       const intentField = el('div');
-      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the recommendations — the gateway drafts the cards and verifies the images resolve; you edit image + text below. Replaces an existing card row on the page so it blends in. Can take a bit.' }));
-      const intentArea = el('textarea', { className: 'pp-code' });
+      const intentArea = el('textarea', { className: 'pp-code pp-intent' });
       intentArea.style.height = '44px';
       intentArea.value = rule.action.intent || '';
       intentArea.placeholder = 'e.g. 4 Sri Lanka specialists / related tours';
@@ -1990,7 +2114,7 @@
       intentField.appendChild(intentArea);
       wrap.appendChild(intentField);
 
-      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: '✨ Draft cards with gateway' });
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Draft cards with gateway') });
       wrap.appendChild(designBtn);
       // Detection status: show which row we'll replace.
       const best = detectBestCardRow();
@@ -2002,15 +2126,14 @@
       designBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         rule.action.intent = intentArea.value;
-        if (!gatewayKey()) { alert('No gateway key set — add it in the Claude Gateway section above, or add cards by hand below.'); return; }
-        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = 'Drafting…';
+        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = gatewayKey() ? 'Drafting…' : 'Waiting for answer…';
         try {
           const out = await gatewayDesignRecStrip(rule.action.intent);
           rule.action.cards = out.cards; rule.action.mode = out.mode; rule.action.target = out.target || '';
           saveConfig(); renderPanel();
         } catch (err) {
           designBtn.disabled = false; designBtn.textContent = orig;
-          designStatus.textContent = '✗ ' + err.message;
+          if (!isCancelled(err)) designStatus.textContent = '✗ ' + err.message;
         }
       });
 
@@ -2078,8 +2201,7 @@
     } else if (rule.action.type === 'runScript') {
       // Describe-it -> gateway writes the JS into the code box; SE reviews + Tests.
       const intentField = el('div');
-      intentField.appendChild(el('div', { className: 'pp-rule-meta', text: 'Describe the change for the gateway to script (e.g. "replace the hero video with an image at <url> and stop the video"). Verifies as it goes — can take a bit.' }));
-      const intentArea = el('textarea', { className: 'pp-code' });
+      const intentArea = el('textarea', { className: 'pp-code pp-intent' });
       intentArea.style.height = '44px';
       intentArea.value = rule.action.scriptIntent || '';
       intentArea.placeholder = 'Describe what to change\u2026';
@@ -2088,26 +2210,26 @@
       intentField.appendChild(intentArea);
       wrap.appendChild(intentField);
 
-      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Design with gateway' });
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('\u2728 Design with gateway') });
       wrap.appendChild(designBtn);
-      const designStatus = el('div', { className: 'pp-hint', text: gatewayKey() ? 'Gateway: ' + gatewayBaseUrl() + ' \u2014 writes JS into the box below; review then Test now.' : 'No gateway key \u2014 set it in Claude Gateway, or write JS by hand below.' });
+      const designStatus = el('div', { className: 'pp-hint', text: '' });
       wrap.appendChild(designStatus);
       designBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         rule.action.scriptIntent = intentArea.value;
-        if (!gatewayKey()) { alert('No gateway key set \u2014 add it in the Claude Gateway section, or write JS by hand.'); return; }
-        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = 'Writing\u2026';
+        const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = gatewayKey() ? 'Writing\u2026' : 'Waiting for answer\u2026';
         try {
           rule.action.code = await gatewayDesignScript(rule.action.scriptIntent);
           saveConfig(); renderPanel();
         } catch (err) {
           designBtn.disabled = false; designBtn.textContent = orig;
-          designStatus.textContent = '\u2717 ' + err.message;
+          if (!isCancelled(err)) designStatus.textContent = '\u2717 ' + err.message;
         }
       });
 
       const codeField = el('div');
-      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JS runs in the page with `rule` and `ctx` in scope \u2014 ctx.$(sel), ctx.$$(sel), ctx.state (visitor topic scores), ctx.config, ctx.log(\u2026). Normal DOM/fetch APIs are available too. Review, then Test now.' });
+      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JavaScript \u2014 review, then Test now' });
+      codeLabel.title = 'Runs in the page with rule and ctx in scope: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.config, ctx.log(\u2026). Normal DOM/fetch APIs too.';
       const codeArea = el('textarea', { className: 'pp-code' });
       codeArea.value = rule.action.code || '';
       codeArea.spellcheck = false;
@@ -2117,10 +2239,9 @@
       wrap.appendChild(codeField);
     }
 
-    // Fired badge + Test / Un-fire
-    const fired = state.firedRules.includes(rule.id);
+    // Test the action once. Undoing a fired rule is done with Reset scores (Live).
     const rowActions = el('div', { className: 'pp-thr-actions' });
-    const testBtn = el('button', { className: 'pp-btn pp-btn--sm', text: fired ? 'Re-run test' : 'Test now' });
+    const testBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Test now' });
     testBtn.title = 'Run this rule\'s action once (does not touch scores)';
     testBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2129,141 +2250,34 @@
       const ok = fn(rule);
       if (!ok) alert('Rule ran but returned no effect \u2014 check selector / URL / console.');
     });
-    const unfireBtn = el('button', { className: 'pp-btn pp-btn--sm', text: fired ? 'Un-fire' : 'Not fired' });
-    if (!fired) unfireBtn.disabled = true, unfireBtn.style.opacity = 0.5;
-    unfireBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (rule.action.type === 'recStrip') restoreRecStrip(rule);
-      state.firedRules = state.firedRules.filter(id => id !== rule.id);
-      saveState(); renderPanel();
-    });
     rowActions.appendChild(testBtn);
-    rowActions.appendChild(unfireBtn);
     wrap.appendChild(rowActions);
 
     return outerWrap;
   }
 
-  // -------------------- Config view --------------------
-  function renderConfig(body) {
+  // Grouped iOS-style section: small title (+ optional count) above a white
+  // card. `bare` skips the card for lists whose items are cards themselves.
+  function section(root, title, count, bare) {
+    const head = el('div', { className: 'pp-sec-title', text: title });
+    if (count !== undefined) head.appendChild(el('span', { className: 'pp-sec-count', text: String(count) }));
+    const card = el('div', { className: bare ? 'pp-sec' : 'pp-sec pp-card' });
+    root.appendChild(head); root.appendChild(card);
+    return card;
+  }
+
+  // -------------------- Build view --------------------
+  function renderBuild(root) {
+    let body = root;
     // AI author \u2014 first thing in Config so it's discoverable
-    body.appendChild(el('h4', { text: 'AI author' }));
+    body = section(root, 'AI author');
     const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Generate config with AI' });
+    aiBtn.classList.add('pp-btn--primary');
     aiBtn.addEventListener('click', (e) => { e.stopPropagation(); openAiPromptModal(); });
     body.appendChild(aiBtn);
-    body.appendChild(el('div', { className: 'pp-hint', text: 'Copy a prompt for ChatGPT/Claude, or wire up the gateway below to generate in one click.' }));
-
-    // Claude Gateway \u2014 connect the inline "Generate with gateway" button.
-    // Stored in `ui` (local only): never exported with a story, never clobbered
-    // by importing one.
-    body.appendChild(el('h4', { text: 'Claude Gateway' }));
-
-    // One-click connect: ask the local gateway (via Tampermonkey's privileged
-    // request) for its key + current tunnel URL, so there's no copy-paste.
-    const connectBtn = el('button', { className: 'pp-btn pp-btn--full', text: '⚡ Connect to local gateway' });
-    body.appendChild(connectBtn);
-    const connectStatus = el('div', { className: 'pp-hint', text: 'Fetches the key + current tunnel URL from your local gateway (needs the Tampermonkey userscript).' });
-    body.appendChild(connectStatus);
-    connectBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const orig = connectBtn.textContent; connectBtn.disabled = true; connectBtn.textContent = 'Connecting…';
-      try {
-        const out = await bootstrapFromLocalGateway();
-        connectStatus.textContent = '✓ Connected — using ' + out.url;
-        renderPanel();
-      } catch (err) {
-        connectBtn.disabled = false; connectBtn.textContent = orig;
-        connectStatus.textContent = '✗ ' + err.message;
-      }
-    });
-
-    const gwUrlRow = el('div', { className: 'pp-row' });
-    const gwUrlInput = el('input', { type: 'text', value: ui.gateway.url || '', placeholder: 'http://localhost:4000' });
-    gwUrlInput.addEventListener('change', () => { ui.gateway.url = gwUrlInput.value.trim(); saveUi(); });
-    gwUrlRow.appendChild(gwUrlInput);
-    body.appendChild(gwUrlRow);
-
-    const gwKeyRow = el('div', { className: 'pp-row' });
-    const gwKeyInput = el('input', { type: 'password', value: ui.gateway.key || '', placeholder: 'Gateway key' });
-    gwKeyInput.autocomplete = 'off';
-    gwKeyInput.addEventListener('change', () => { ui.gateway.key = gwKeyInput.value.trim(); saveUi(); });
-    const gwTestBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Test' });
-    gwTestBtn.title = 'Check the gateway is reachable (GET /health)';
-    gwKeyRow.appendChild(gwKeyInput);
-    gwKeyRow.appendChild(gwTestBtn);
-    body.appendChild(gwKeyRow);
-
-    const gwStatus = el('div', { className: 'pp-hint', text: 'URL + key for the Claude Gateway. Stays on this machine; not saved in exported stories.' });
-    body.appendChild(gwStatus);
-    gwTestBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      // Persist latest field values before testing.
-      ui.gateway.url = gwUrlInput.value.trim(); ui.gateway.key = gwKeyInput.value.trim(); saveUi();
-      gwTestBtn.disabled = true; const orig = gwTestBtn.textContent; gwTestBtn.textContent = '\u2026';
-      gwStatus.textContent = 'Checking ' + gatewayBaseUrl() + '/health \u2026';
-      const res = await gatewayHealth();
-      gwTestBtn.disabled = false; gwTestBtn.textContent = orig;
-      gwStatus.textContent = res.ok
-        ? '\u2713 Gateway reachable at ' + gatewayBaseUrl() + (gatewayKey() ? '' : ' (add a key to generate)')
-        : '\u2717 ' + gatewayBaseUrl() + ': ' + res.reason;
-    });
-
-    // This site \u2014 the update-proof allowlist. Scope lives here (data), not in
-    // the userscript @match, so it survives Tampermonkey auto-updates.
-    body.appendChild(el('h4', { text: 'Where it runs' }));
-    body.appendChild(el('div', { className: 'pp-current-url pp-url', text: window.location.hostname || '(local)' }));
-    const stopBtn = el('button', { className: 'pp-btn pp-btn--full pp-btn--danger', text: 'Stop running on this site' });
-    stopBtn.title = 'Removes this site from the allowlist and reloads \u2014 the panel goes dormant here';
-    stopBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCurrentSite(); });
-    body.appendChild(stopBtn);
-    const sites = getAllowedSites();
-    const siteList = el('ul');
-    if (!sites.length) siteList.appendChild(el('li', { className: 'pp-empty', text: 'No sites allow-listed' }));
-    else for (const sEntry of sites) {
-      const li = el('li');
-      li.appendChild(el('span', { className: 'pp-url', text: sEntry }));
-      const del = el('button', { className: 'pp-icon', text: '\u00d7', ariaLabel: 'Remove site', title: 'Remove site' });
-      del.addEventListener('click', (e) => { e.stopPropagation(); removeSite(sEntry); renderPanel(); });
-      li.appendChild(del);
-      siteList.appendChild(li);
-    }
-    body.appendChild(siteList);
-    body.appendChild(el('div', { className: 'pp-hint', text: 'Scope persists across userscript updates (stored as data, not in @match). Enable other sites from the Tampermonkey menu.' }));
-
-    // Persona avatar \u2014 shown inside the collapsed badge
-    body.appendChild(el('h4', { text: 'Persona avatar' }));
-    const personaRow = el('div', { className: 'pp-persona-row' });
-    const libBtn = el('button', { className: 'pp-persona-lib', ariaLabel: 'Choose from library', title: 'Choose from library' });
-    libBtn.textContent = '\u25be'; // down-pointing triangle
-    if (config.avatarUrl) {
-      const preview = document.createElement('img');
-      preview.src = config.avatarUrl; preview.className = 'pp-persona-preview';
-      libBtn.textContent = '';
-      libBtn.appendChild(preview);
-    }
-    const urlInput = el('input', { type: 'text', className: 'pp-persona-input', value: config.avatarUrl || '', placeholder: 'https://\u2026image.png  or pick from library' });
-    const clearBtn = el('button', { className: 'pp-persona-clear', ariaLabel: 'Clear avatar', title: 'Clear', text: '\u00d7' });
-    personaRow.appendChild(libBtn);
-    personaRow.appendChild(urlInput);
-    personaRow.appendChild(clearBtn);
-    body.appendChild(personaRow);
-    body.appendChild(el('div', { className: 'pp-hint', text: 'Shown inside the badge when the panel is collapsed. Leave empty for the Salesforce cloud default.' }));
-
-    urlInput.addEventListener('change', () => {
-      config.avatarUrl = urlInput.value.trim();
-      saveConfig(); renderPanel();
-    });
-    clearBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      config.avatarUrl = ''; saveConfig(); renderPanel();
-    });
-    libBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      togglePersonaLibrary(libBtn, urlInput);
-    });
 
     // Topics
-    body.appendChild(el('h4', { text: 'Topics' }));
+    body = section(root, 'Topics');
     const topicList = el('ul');
     if (!config.topics.length) topicList.appendChild(el('li', { className: 'pp-empty', text: 'No topics \u2014 add one below' }));
     else {
@@ -2302,16 +2316,73 @@
     });
     newTopicInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTopicBtn.click(); } });
 
-    // Tag this page
-    body.appendChild(el('h4', { text: 'Tag this page' }));
-    const currentUrl = el('div', { className: 'pp-current-url pp-url', text: window.location.pathname + window.location.search + window.location.hash });
-    body.appendChild(currentUrl);
+    // Page tags: existing URL rules, then a row to tag the current page.
+    body = section(root, 'Page tags', config.urlRules.length);
+    const hereUrl = window.location.href;
+    const herePath = window.location.pathname || '/';
+    const ruleList = el('ul');
+    if (!config.urlRules.length) ruleList.appendChild(el('li', { className: 'pp-empty', text: 'No pages tagged yet' }));
+    else {
+      for (const r of config.urlRules) {
+        const li = el('li');
+        const rbody = el('div', { className: 'pp-rule-body' });
+        const patInput = el('input', { type: 'text', value: r.pattern });
+        patInput.addEventListener('change', () => { r.pattern = patInput.value; saveConfig(); renderPanel(); });
+        const meta = el('div', { className: 'pp-rule-meta' });
 
+        const kindSel = document.createElement('select');
+        for (const k of ['exact', 'prefix', 'regex']) {
+          const o = document.createElement('option'); o.value = k; o.textContent = k;
+          if (r.kind === k) o.selected = true;
+          kindSel.appendChild(o);
+        }
+        kindSel.addEventListener('change', () => { r.kind = kindSel.value; saveConfig(); renderPanel(); });
+
+        const topicSel = document.createElement('select');
+        for (const t of config.topics) {
+          const o = document.createElement('option'); o.value = t.id; o.textContent = t.label;
+          if (r.topicId === t.id) o.selected = true;
+          topicSel.appendChild(o);
+        }
+        topicSel.addEventListener('change', () => { r.topicId = topicSel.value; saveConfig(); renderPanel(); });
+
+        const wInput = document.createElement('input');
+        wInput.type = 'number'; wInput.value = String(r.weight); wInput.style.width = '52px';
+        wInput.addEventListener('change', () => { r.weight = Number(wInput.value) || 1; saveConfig(); });
+
+        meta.appendChild(kindSel);
+        meta.appendChild(document.createTextNode(' → '));
+        meta.appendChild(topicSel);
+        meta.appendChild(document.createTextNode(' × '));
+        meta.appendChild(wInput);
+        // Same matching as scoring, so the badge shows exactly what fires here.
+        if (patternMatches(r.pattern, r.kind, hereUrl, herePath)) {
+          meta.appendChild(el('span', { className: 'pp-here', text: 'This page' }));
+        }
+        rbody.appendChild(patInput);
+        rbody.appendChild(meta);
+        li.appendChild(rbody);
+        const del = el('button', { className: 'pp-icon', text: '×', ariaLabel: 'Delete tag', title: 'Delete tag' });
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          config.urlRules = config.urlRules.filter(x => x.id !== r.id);
+          saveConfig(); renderPanel();
+        });
+        li.appendChild(del);
+        ruleList.appendChild(li);
+      }
+    }
+    body.appendChild(ruleList);
+
+    const addWrap = el('div', { className: 'pp-tag-add' });
+    const addLabel = el('div', { className: 'pp-tag-add__label', text: 'Tag this page ' });
+    addLabel.appendChild(el('span', { className: 'pp-url', text: window.location.pathname + window.location.search + window.location.hash }));
+    addWrap.appendChild(addLabel);
     const tagRow = el('div', { className: 'pp-row' });
     const topicSelect = el('select');
     if (!config.topics.length) {
       const opt = document.createElement('option');
-      opt.value = ''; opt.textContent = '(no topics)';
+      opt.value = ''; opt.textContent = '(add a topic first)';
       topicSelect.appendChild(opt);
       topicSelect.disabled = true;
     } else {
@@ -2323,11 +2394,13 @@
     }
     const weightInput = el('input', { className: 'pp-weight', type: 'number', value: '1' });
     weightInput.min = '-100'; weightInput.max = '100'; weightInput.step = '1';
-    const addRuleBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Add rule' });
+    weightInput.title = 'Weight added to the topic score on each visit';
+    const addRuleBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Add' });
     tagRow.appendChild(topicSelect);
     tagRow.appendChild(weightInput);
     tagRow.appendChild(addRuleBtn);
-    body.appendChild(tagRow);
+    addWrap.appendChild(tagRow);
+    body.appendChild(addWrap);
     addRuleBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!config.topics.length) return;
@@ -2342,69 +2415,15 @@
       saveConfig(); renderPanel();
     });
 
-    // Existing URL rules
-    body.appendChild(el('h4', { text: 'URL rules (' + config.urlRules.length + ')' }));
-    const ruleList = el('ul');
-    if (!config.urlRules.length) ruleList.appendChild(el('li', { className: 'pp-empty', text: 'No URL rules yet' }));
-    else {
-      for (const r of config.urlRules) {
-        const li = el('li');
-        const rbody = el('div', { className: 'pp-rule-body' });
-        const patInput = el('input', { type: 'text', value: r.pattern });
-        patInput.addEventListener('change', () => { r.pattern = patInput.value; saveConfig(); });
-        const meta = el('div', { className: 'pp-rule-meta' });
-        const topicLabel = (config.topics.find(t => t.id === r.topicId) || {}).label || r.topicId;
-
-        const kindSel = document.createElement('select');
-        for (const k of ['exact', 'prefix', 'regex']) {
-          const o = document.createElement('option'); o.value = k; o.textContent = k;
-          if (r.kind === k) o.selected = true;
-          kindSel.appendChild(o);
-        }
-        kindSel.style.fontSize = '10px';
-        kindSel.addEventListener('change', () => { r.kind = kindSel.value; saveConfig(); });
-
-        const topicSel = document.createElement('select');
-        for (const t of config.topics) {
-          const o = document.createElement('option'); o.value = t.id; o.textContent = t.label;
-          if (r.topicId === t.id) o.selected = true;
-          topicSel.appendChild(o);
-        }
-        topicSel.style.fontSize = '10px';
-        topicSel.addEventListener('change', () => { r.topicId = topicSel.value; saveConfig(); renderPanel(); });
-
-        const wInput = document.createElement('input');
-        wInput.type = 'number'; wInput.value = String(r.weight); wInput.style.width = '48px'; wInput.style.fontSize = '10px';
-        wInput.addEventListener('change', () => { r.weight = Number(wInput.value) || 1; saveConfig(); });
-
-        meta.appendChild(kindSel);
-        meta.appendChild(document.createTextNode(' \u2192 '));
-        meta.appendChild(topicSel);
-        meta.appendChild(document.createTextNode(' \u00D7 '));
-        meta.appendChild(wInput);
-        rbody.appendChild(patInput);
-        rbody.appendChild(meta);
-        li.appendChild(rbody);
-        const del = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete rule', title: 'Delete rule' });
-        del.addEventListener('click', (e) => {
-          e.stopPropagation();
-          config.urlRules = config.urlRules.filter(x => x.id !== r.id);
-          saveConfig(); renderPanel();
-        });
-        li.appendChild(del);
-        ruleList.appendChild(li);
-      }
-    }
-    body.appendChild(ruleList);
-
     // Threshold rules \u2014 the "what happens when" configuration
-    body.appendChild(el('h4', { text: 'Threshold rules (' + config.thresholdRules.length + ')' }));
+    body = section(root, 'Threshold rules', config.thresholdRules.length, true);
     const thrList = el('div');
     if (!config.thresholdRules.length) thrList.appendChild(el('div', { className: 'pp-empty', text: 'No threshold rules yet' }));
     else for (const r of config.thresholdRules) thrList.appendChild(renderThresholdRule(r));
     body.appendChild(thrList);
 
-    const addThrBtn = el('button', { className: 'pp-btn pp-btn--full', text: '+ Add threshold rule for this page' });
+    const addThrBtn = el('button', { className: 'pp-btn pp-btn--full', text: '+ Add rule for this page' });
+    addThrBtn.classList.add('pp-btn--primary');
     addThrBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       const currentPath = window.location.pathname + window.location.search;
@@ -2420,37 +2439,142 @@
     });
     body.appendChild(addThrBtn);
 
-    // Danger zone / Export / Import
-    const actionsRow = el('div', { className: 'pp-actions-row' });
-    const rescoreBtn = el('button', { className: 'pp-btn', text: 'Re-score & clear' });
-    const wipeBtn = el('button', { className: 'pp-btn pp-btn--danger', text: 'Wipe config' });
-    actionsRow.appendChild(rescoreBtn);
-    actionsRow.appendChild(wipeBtn);
-    body.appendChild(actionsRow);
-    rescoreBtn.addEventListener('click', (e) => {
+  }
+
+  // -------------------- Settings view --------------------
+  function renderSettings(root) {
+    let body = root;
+    // Claude Gateway \u2014 connect the inline "Generate with gateway" button.
+    // Stored in `ui` (local only): never exported with a story, never clobbered
+    // by importing one.
+    body = section(root, 'Claude Gateway');
+
+    // One-click connect: ask the local gateway (via Tampermonkey's privileged
+    // request) for its key + current tunnel URL, so there's no copy-paste.
+    const connectBtn = el('button', { className: 'pp-btn pp-btn--full', text: '⚡ Connect to local gateway' });
+    body.appendChild(connectBtn);
+    const connectStatus = el('div', { className: 'pp-hint', text: gatewayKey() ? '\u2713 Connected' : '' });
+    connectBtn.title = 'Fetches the key + tunnel URL from your local gateway (customer HTTPS sites need the Tampermonkey userscript)';
+    body.appendChild(connectStatus);
+    connectBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      state = { scores: {}, firedRules: [], scoredUrls: [] };
-      saveState();
-      scoreCurrentPage();
-      renderPanel();
+      const orig = connectBtn.textContent; connectBtn.disabled = true; connectBtn.textContent = 'Connecting…';
+      try {
+        const out = await bootstrapFromLocalGateway();
+        connectStatus.textContent = '✓ Connected — using ' + out.url;
+        renderPanel();
+      } catch (err) {
+        connectBtn.disabled = false; connectBtn.textContent = orig;
+        connectStatus.textContent = '✗ ' + err.message;
+      }
     });
-    wipeBtn.addEventListener('click', (e) => {
+
+    const gwUrlRow = el('div', { className: 'pp-row' });
+    const gwUrlInput = el('input', { type: 'text', value: ui.gateway.url || '', placeholder: 'http://localhost:4000' });
+    gwUrlInput.addEventListener('change', () => { ui.gateway.url = gwUrlInput.value.trim(); saveUi(); });
+    gwUrlRow.appendChild(gwUrlInput);
+    body.appendChild(gwUrlRow);
+
+    const gwKeyRow = el('div', { className: 'pp-row' });
+    const gwKeyInput = el('input', { type: 'password', value: ui.gateway.key || '', placeholder: 'Gateway key' });
+    gwKeyInput.autocomplete = 'off';
+    gwKeyInput.addEventListener('change', () => { ui.gateway.key = gwKeyInput.value.trim(); saveUi(); });
+    const gwTestBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Test' });
+    gwTestBtn.title = 'Check the gateway is reachable (GET /health)';
+    gwKeyRow.appendChild(gwKeyInput);
+    gwKeyRow.appendChild(gwTestBtn);
+    body.appendChild(gwKeyRow);
+
+    const gwStatus = el('div', { className: 'pp-hint', text: '' });
+    gwKeyInput.title = 'Stays on this machine; not saved in exported stories';
+    body.appendChild(gwStatus);
+    gwTestBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm('Wipe all config (topics + URL rules + threshold rules) and reset to defaults?')) return;
-      config = defaultConfig();
-      state = { scores: {}, firedRules: [], scoredUrls: [] };
-      saveConfig(); saveState(); renderPanel();
+      // Persist latest field values before testing.
+      ui.gateway.url = gwUrlInput.value.trim(); ui.gateway.key = gwKeyInput.value.trim(); saveUi();
+      gwTestBtn.disabled = true; const orig = gwTestBtn.textContent; gwTestBtn.textContent = '\u2026';
+      gwStatus.textContent = 'Checking ' + gatewayBaseUrl() + '/health \u2026';
+      const res = await gatewayHealth();
+      gwTestBtn.disabled = false; gwTestBtn.textContent = orig;
+      gwStatus.textContent = res.ok
+        ? '\u2713 Gateway reachable at ' + gatewayBaseUrl() + (gatewayKey() ? '' : ' (add a key to generate)')
+        : '\u2717 ' + gatewayBaseUrl() + ': ' + res.reason;
+    });
+
+    // This site \u2014 the update-proof allowlist. Scope lives here (data), not in
+    // the userscript @match, so it survives Tampermonkey auto-updates.
+    body = section(root, 'Where it runs');
+    const stopBtn = el('button', { className: 'pp-btn pp-btn--full pp-btn--danger', text: 'Stop running on this site' });
+    stopBtn.title = 'Removes this site from the allowlist and reloads \u2014 the panel goes dormant here';
+    stopBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCurrentSite(); });
+    const sites = getAllowedSites();
+    const siteList = el('ul');
+    if (!sites.length) siteList.appendChild(el('li', { className: 'pp-empty', text: 'No sites allow-listed' }));
+    else for (const sEntry of sites) {
+      const li = el('li');
+      li.appendChild(el('span', { className: 'pp-url', text: sEntry }));
+      const del = el('button', { className: 'pp-icon', text: '\u00d7', ariaLabel: 'Remove site', title: 'Remove site' });
+      del.addEventListener('click', (e) => { e.stopPropagation(); removeSite(sEntry); renderPanel(); });
+      li.appendChild(del);
+      siteList.appendChild(li);
+    }
+    body.appendChild(siteList);
+    body.appendChild(stopBtn);
+
+    // Persona avatar \u2014 shown inside the collapsed badge
+    body = section(root, 'Persona avatar');
+    const personaRow = el('div', { className: 'pp-persona-row' });
+    const libBtn = el('button', { className: 'pp-persona-lib', ariaLabel: 'Choose from library', title: 'Choose from library' });
+    libBtn.textContent = '\u25be'; // down-pointing triangle
+    if (config.avatarUrl) {
+      const preview = document.createElement('img');
+      preview.src = config.avatarUrl; preview.className = 'pp-persona-preview';
+      libBtn.textContent = '';
+      libBtn.appendChild(preview);
+    }
+    const urlInput = el('input', { type: 'text', className: 'pp-persona-input', value: config.avatarUrl || '', placeholder: 'https://\u2026image.png  or pick from library' });
+    const clearBtn = el('button', { className: 'pp-persona-clear', ariaLabel: 'Clear avatar', title: 'Clear', text: '\u00d7' });
+    personaRow.appendChild(libBtn);
+    personaRow.appendChild(urlInput);
+    personaRow.appendChild(clearBtn);
+    body.appendChild(personaRow);
+
+    // Identification moment: keep the avatar hidden until a popup form identifies the visitor.
+    const hideLabel = el('label', { className: 'pp-check' });
+    const hideInput = document.createElement('input');
+    hideInput.type = 'checkbox'; hideInput.checked = !!config.avatarHidden;
+    hideInput.addEventListener('change', () => { config.avatarHidden = hideInput.checked; saveConfig(); renderPanel(); });
+    hideLabel.appendChild(hideInput);
+    hideLabel.appendChild(document.createTextNode('Hide until identified'));
+    hideLabel.title = 'Shows once the visitor submits a popup form marked “Reveals persona avatar”. Reset scores hides it again.';
+    body.appendChild(hideLabel);
+    if (config.avatarHidden) {
+      const revealers = (config.thresholdRules || []).filter(r => r.action && r.action.type === 'richPopup' && r.action.revealAvatar).length;
+      body.appendChild(el('div', { className: 'pp-hint', text: state.identified ? '✓ Identified — avatar showing'
+        : (revealers ? 'Hidden until a form is submitted' : 'No popup reveals it yet — tick “Reveals persona avatar” on one') }));
+    }
+
+    urlInput.addEventListener('change', () => {
+      config.avatarUrl = urlInput.value.trim();
+      saveConfig(); renderPanel();
+    });
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      config.avatarUrl = ''; saveConfig(); renderPanel();
+    });
+    libBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePersonaLibrary(libBtn, urlInput);
     });
 
     // Import / Export \u2014 real file operations
-    body.appendChild(el('h4', { text: 'Save / load story' }));
+    body = section(root, 'Save / load story');
     const ioRow = el('div', { className: 'pp-actions-row' });
     const exportBtn = el('button', { className: 'pp-btn', text: '\u2B07 Export' });
     const importBtn = el('button', { className: 'pp-btn', text: '\u2B06 Import' });
     ioRow.appendChild(exportBtn);
     ioRow.appendChild(importBtn);
     body.appendChild(ioRow);
-    body.appendChild(el('div', { className: 'pp-hint', text: 'Exports a JSON file: web_perso_story__<site>__<date>.json' }));
 
     exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportStoryFile(); });
     importBtn.addEventListener('click', (e) => { e.stopPropagation(); openImportPicker(); });
@@ -2480,6 +2604,29 @@
       catch (err) { alert('Invalid JSON: ' + err.message); }
     });
     body.appendChild(details);
+    // Danger zone
+    body = section(root, 'Reset');
+    const actionsRow = el('div', { className: 'pp-actions-row' });
+    const rescoreBtn = el('button', { className: 'pp-btn', text: 'Re-score & clear' });
+    const wipeBtn = el('button', { className: 'pp-btn pp-btn--danger', text: 'Wipe config' });
+    actionsRow.appendChild(rescoreBtn);
+    actionsRow.appendChild(wipeBtn);
+    body.appendChild(actionsRow);
+    rescoreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state = { scores: {}, firedRules: [], scoredUrls: [] };
+      saveState();
+      scoreCurrentPage();
+      renderPanel();
+    });
+    wipeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!confirm('Wipe all config (topics + URL rules + threshold rules) and reset to defaults?')) return;
+      config = defaultConfig();
+      state = { scores: {}, firedRules: [], scoredUrls: [] };
+      saveConfig(); saveState(); renderPanel();
+    });
+
   }
 
   // -------------------- AI authoring prompt --------------------
@@ -2561,6 +2708,8 @@ SCHEMA (must match exactly \u2014 engine imports this verbatim)
   "_sourceHost": "${host}",
   "config": {
     "client": "<human name for this configuration, e.g. Audley Sri Lanka boost>",
+    "avatarHidden": <optional true: keep the persona avatar hidden until a richPopup
+                     with "revealAvatar": true has its form submitted>,
     "topics": [
       { "id": "<kebab-case-id>", "label": "<human label>" }
     ],
@@ -2596,19 +2745,14 @@ Preferred form — target a named slot from the list above (selector-free):
 Fallback form — only when no slot fits, target a raw CSS selector:
 { "type": "swapImage", "selector": "<CSS selector>", "image": "<absolute image URL>" }
 
-Show popup (simple fixed template):
-{ "type": "popup",
-  "title": "<string>",
-  "body": "<string>",
-  "cta": { "label": "<button text>", "href": "<url>" }   // optional
-}
-
-AI-designed popup (brand-matched HTML + CSS; use for richer layouts or a form):
+Popup (brand-matched HTML + CSS; the only popup type — use it for every popup, with or without a form):
 { "type": "richPopup",
   "html": "<self-contained popup markup. NO <script>/<iframe>/external resources.
            Define your own classes. Do NOT include a backdrop or close button \u2014
            the engine adds those. For a form, use labelled inputs + a submit button.>",
-  "css":  "<CSS targeting the classes you defined; it is scoped to the popup box>"
+  "css":  "<CSS targeting the classes you defined; it is scoped to the popup box>",
+  "revealAvatar": <optional true: for a sign-up/identification form. Submitting it
+                   reveals the persona avatar if it is set to hide until identified>
 }
 
 Recommendations strip (structured cards; engine clones an existing card row to
@@ -2619,7 +2763,7 @@ match the site's styling, or injects a generic strip if none exists):
   "cards": [ { "image": "<image URL or empty>", "lines": ["Name", "Title", "Short blurb"] } ]
 }
 
-Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/popup can't cover it):
+Run script (arbitrary DOM tweaks \u2014 use ONLY when swapImage/richPopup/recStrip can't cover it):
 { "type": "runScript",
   "code": "<JS body. \`rule\` and \`ctx\` are in scope; normal DOM/fetch APIs too. Helpers:\n  ctx.$(sel) -> first element\n  ctx.$$(sel) -> all elements\n  ctx.state -> visitor signals {scores, firedRules, scoredUrls}\n  ctx.config -> full config (topics, rules)\n  ctx.log(...) -> console.info. Write robust, idempotent code; guard missing elements; no cookie writes or sending page data to third parties>"
 }
@@ -2640,6 +2784,10 @@ AUTHORING RULES
   never touch localStorage / cookies / fetch / navigate.
 - appliesOn should be tight. A homepage-hero swap should appliesOn the
   homepage only, not everywhere.
+- If the brief mentions identifying, recognising, signing up or capturing the
+  visitor, add a richPopup with a form and "revealAvatar": true, and set
+  "avatarHidden": true in config, so the persona avatar appears only once the
+  form is submitted. Never include "avatarUrl" (the SE picks the avatar).
 - Set _exportedAt to the current UTC timestamp in ISO 8601 format.
 
 STRING ENCODING (IMPORTANT - do not skip)
@@ -2764,11 +2912,21 @@ Config -> Save/load story -> Import.`;
 
   // Call the local gateway's localhost-only /bootstrap (no key) to fetch
   // { key, tunnelUrl }, then store them so all later calls use the HTTPS tunnel.
+  // Without GM (local demo page, tests) fall back to plain fetch — works when the
+  // page itself is http(s)://localhost and the gateway allows the origin (CORS).
+  async function bootstrapFetch(url, timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs || 8000);
+    try {
+      const r = await fetch(url, { signal: controller.signal, credentials: 'omit' });
+      return { status: r.status, text: await r.text() };
+    } catch (e) {
+      throw new Error('Could not reach ' + url + ' without the Tampermonkey userscript (blocked by mixed-content/CORS, or gateway not running). Install the userscript or paste the URL + key manually.');
+    } finally { clearTimeout(timer); }
+  }
   async function bootstrapFromLocalGateway() {
-    if (!hasGM()) {
-      throw new Error('Connect needs the Tampermonkey userscript (GM_xmlhttpRequest). Paste the URL + key manually instead.');
-    }
-    const res = await gatewayGM('GET', bootstrapUrl() + '/bootstrap', 8000);
+    const url = bootstrapUrl() + '/bootstrap';
+    const res = hasGM() ? await gatewayGM('GET', url, 8000) : await bootstrapFetch(url, 8000);
     if (res.status === 404) throw new Error('Gateway has no /bootstrap endpoint — see gateway-bootstrap-patch.md.');
     if (res.status < 200 || res.status >= 300) throw new Error('Bootstrap returned HTTP ' + res.status + ' (is the local gateway running?).');
     let j;
@@ -2803,7 +2961,7 @@ Config -> Save/load story -> Import.`;
       + (headings.length ? 'Visible headings: ' + headings.join(' | ') + '\n' : '')
       + 'Design this popup: ' + (intent && intent.trim() ? intent.trim() : 'a tasteful promotional offer with a clear call to action')
       + '\n\nReturn only the JSON object.';
-    const parsed = await gatewayAgent(
+    const parsed = await aiAgent(
       system + '\n\n' + prompt + '\nVerify that any URLs you include actually resolve.',
       { html: 'string', css: 'string' },
       { host: host, title: document.title }
@@ -2846,7 +3004,7 @@ Config -> Save/load story -> Import.`;
       + 'Number of cards: ' + count + '\n'
       + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page')
       + '\n\nReturn only the JSON object.';
-    const parsed = await gatewayAgent(
+    const parsed = await aiAgent(
       system + '\n\n' + prompt,
       { cards: [{ image: 'string', lines: ['string'] }] },
       { host: host, title: document.title, sample: sample, count: count, intent: intent || '' }
@@ -2940,7 +3098,7 @@ Config -> Save/load story -> Import.`;
     // transport level inside gatewayAgent (Content-Encoding: gzip).
     var ctx = { host: host, title: document.title };
     if (pageHtml) ctx.html = pageHtml;
-        let text = await gatewayAgent(system + '\n\n' + prompt, null, ctx);
+    let text = await aiAgent(system + '\n\n' + prompt, null, ctx);
     text = String(text).trim().replace(/^```(?:js|javascript)?\s*/i, '').replace(/```\s*$/i, '').trim();
     // Unwrap an accidental function/arrow wrapper so we store a plain body.
     const fn = text.match(/^(?:function\s*\w*\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{([\s\S]*)\}\s*;?$/);
@@ -3008,6 +3166,110 @@ Config -> Save/load story -> Import.`;
     throw new Error('Agent returned no usable result.');
   }
 
+  // AI call that works with or without the gateway. Connected: gatewayAgent.
+  // Not connected: show the full prompt (task + context + output shape) to copy
+  // into ChatGPT/Claude, and resolve with the pasted answer parsed exactly like
+  // a gateway response (text mode -> string, schema mode -> object).
+  // Rejects with err.cancelled if the SE closes the modal.
+  function aiAgent(task, schema, context) {
+    if (gatewayKey()) return gatewayAgent(task, schema, context);
+    return openManualAiModal(buildManualPrompt(task, schema, context), schema);
+  }
+  function aiButtonText(gatewayText) {
+    return gatewayKey() ? gatewayText : '✨ Author with AI (copy / paste)';
+  }
+  function isCancelled(err) { return !!(err && err.cancelled); }
+
+  function buildManualPrompt(task, schema, context) {
+    let out = task;
+    const entries = context ? Object.entries(context).filter(([, v]) => v !== '' && v != null) : [];
+    if (entries.length) {
+      out += '\n\nCONTEXT';
+      for (const [k, v] of entries) {
+        const s = typeof v === 'string' ? v : JSON.stringify(v);
+        out += (s.length > 200 || s.includes('\n'))
+          ? '\ncontext.' + k + ':\n```\n' + s + '\n```'
+          : '\ncontext.' + k + ': ' + s;
+      }
+    }
+    if (schema) {
+      out += '\n\nOUTPUT FORMAT\nReply with ONLY a JSON object of this shape — no prose, no code fences:\n'
+        + JSON.stringify(schema, null, 2);
+    }
+    return out;
+  }
+
+  // Fence/prose tolerant: strip ``` fences; for JSON fall back to the outermost {...}.
+  function parseManualAnswer(raw, schema) {
+    const stripped = String(raw).trim().replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
+    if (!stripped) throw new Error('Paste the AI’s answer first.');
+    if (!schema) return stripped;
+    try { return JSON.parse(stripped); } catch (e) { /* try the outermost object */ }
+    const a = stripped.indexOf('{'), b = stripped.lastIndexOf('}');
+    if (a !== -1 && b > a) {
+      try { return JSON.parse(stripped.slice(a, b + 1)); } catch (e) { /* fall through */ }
+    }
+    throw new Error('That isn’t valid JSON — paste only the JSON object the AI returned.');
+  }
+
+  function openManualAiModal(prompt, schema) {
+    return new Promise((resolve, reject) => {
+      const existing = document.getElementById('pp-ai-modal');
+      if (existing) existing.remove();
+      const wrap = document.createElement('div'); wrap.id = 'pp-ai-modal';
+      const backdrop = document.createElement('div'); backdrop.className = 'pp-ai-backdrop';
+      const box = document.createElement('div'); box.className = 'pp-ai-box';
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'pp-ai-close'; closeBtn.textContent = '×'; closeBtn.setAttribute('aria-label', 'Close');
+
+      const title = document.createElement('h3'); title.textContent = 'Author with AI';
+      const sub = document.createElement('div'); sub.className = 'pp-ai-sub';
+      sub.textContent = 'Gateway not connected — copy the full prompt into ChatGPT/Claude, then paste its answer back here.';
+
+      const promptLabel = document.createElement('label'); promptLabel.className = 'pp-ai-label';
+      promptLabel.textContent = '1. Copy the full prompt';
+      const promptArea = document.createElement('textarea'); promptArea.rows = 6; promptArea.readOnly = true;
+      promptArea.value = prompt;
+      const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '📋 Copy prompt';
+      const rowA = document.createElement('div'); rowA.className = 'pp-ai-row'; rowA.appendChild(copyBtn);
+
+      const outLabel = document.createElement('label'); outLabel.className = 'pp-ai-label pp-ai-label--gap';
+      outLabel.textContent = schema ? '2. Paste the AI’s JSON answer' : '2. Paste the AI’s answer';
+      const outArea = document.createElement('textarea'); outArea.rows = 8;
+      outArea.placeholder = schema ? '{ ... }' : '// paste the code the AI returned';
+      const err = document.createElement('div'); err.className = 'pp-ai-err';
+      const applyBtn = document.createElement('button'); applyBtn.className = 'pp-btn'; applyBtn.textContent = 'Use this answer';
+      const rowB = document.createElement('div'); rowB.className = 'pp-ai-row'; rowB.appendChild(applyBtn);
+
+      for (const n of [closeBtn, title, sub, promptLabel, promptArea, rowA, outLabel, outArea, err, rowB]) box.appendChild(n);
+      wrap.appendChild(backdrop); wrap.appendChild(box);
+      document.body.appendChild(wrap);
+
+      function cancel() {
+        wrap.remove();
+        const e = new Error('Cancelled'); e.cancelled = true; reject(e);
+      }
+      closeBtn.addEventListener('click', cancel);
+      backdrop.addEventListener('click', cancel);
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(prompt);
+          copyBtn.textContent = 'Copied ✓';
+          setTimeout(() => { copyBtn.textContent = '📋 Copy prompt'; }, 1500);
+        } catch (e) {
+          promptArea.focus(); promptArea.select();
+          err.textContent = 'Clipboard blocked — the prompt is selected, press Ctrl/Cmd+C.';
+        }
+      });
+      applyBtn.addEventListener('click', () => {
+        try {
+          const value = parseManualAnswer(outArea.value, schema);
+          wrap.remove(); resolve(value);
+        } catch (e) { err.textContent = e.message; }
+      });
+    });
+  }
+
   function openAiPromptModal() {
     // Reuse popup-style modal
     if (document.getElementById('pp-ai-modal')) return;
@@ -3032,13 +3294,13 @@ Config -> Save/load story -> Import.`;
     const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '\uD83D\uDCCB Copy prompt';
 
     const rowA = document.createElement('div'); rowA.className = 'pp-ai-row';
-    rowA.appendChild(genBtn);
+    if (gatewayKey()) rowA.appendChild(genBtn);
     rowA.appendChild(copyBtn);
 
     const gwStatus = document.createElement('div'); gwStatus.className = 'pp-ai-sub'; gwStatus.style.marginTop = '6px';
     gwStatus.textContent = gatewayKey()
       ? 'Gateway: ' + gatewayBaseUrl()
-      : 'No gateway key set \u2014 add it in Config \u2192 Claude Gateway, or use Copy prompt.';
+      : 'Gateway not connected \u2014 Copy prompt, run it in ChatGPT/Claude, and paste the JSON answer below.';
 
     const outLabel = document.createElement('label'); outLabel.textContent = 'Paste the AI\'s JSON response here';
     outLabel.className = 'pp-ai-label pp-ai-label--gap';
@@ -3175,7 +3437,10 @@ Config -> Save/load story -> Import.`;
     if (!parsed || !Array.isArray(parsed.topics) || !Array.isArray(parsed.urlRules)) {
       throw new Error('Not a valid web_perso_story config (missing topics/urlRules)');
     }
-    config = Object.assign(defaultConfig(), parsed);
+    // Avatar is the SE's choice: keep the current avatar settings unless the story sets them.
+    const keep = {};
+    for (const k of ['avatarUrl', 'avatarHidden']) if (!(k in parsed) && config[k] !== undefined) keep[k] = config[k];
+    config = Object.assign(defaultConfig(), keep, parsed);
     saveConfig();
     renderPanel();
   }
