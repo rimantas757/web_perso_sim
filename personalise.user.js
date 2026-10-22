@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.21.1724
+// @version      2026.10.22.1605
 // @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
@@ -193,8 +193,23 @@
   function saveUi() { saveJSON(UI_STORAGE_KEY, ui); }
 
   // -------------------- URL matching --------------------
+  // "/", "/index.html" and "/x/" vs "/x" are the same page to a visitor; exact
+  // matches compare normalised forms so a home link to index.html still counts.
+  function normalisePath(p) {
+    let out = String(p || '').replace(/\/index\.(?:html?|php|aspx?)$/i, '/');
+    if (out.length > 1) out = out.replace(/\/+$/, '');
+    return out || '/';
+  }
+  function normaliseUrl(u) {
+    try { const x = new URL(u); return x.origin + normalisePath(x.pathname) + x.search + x.hash; } catch (e) { return u; }
+  }
   function patternMatches(pattern, kind, url, path) {
-    if (kind === 'exact') return path === pattern || url === pattern;
+    if (kind === 'exact') {
+      if (path === pattern || url === pattern) return true;
+      return /^https?:\/\//i.test(pattern)
+        ? normaliseUrl(url) === normaliseUrl(pattern)
+        : normalisePath(path) === normalisePath(pattern);
+    }
     if (kind === 'prefix') {
       // Prefix ends in "*" \u2014 strip and check
       const p = pattern.replace(/\*+$/, '');
@@ -327,7 +342,7 @@
     const MIN = 24; // px — ignore icons/tracking pixels
     function consider(el, kind, src) {
       if (!src || seen.has(el)) return;
-      if (el.closest('#pp-panel, #pp-pick-overlay, #pp-pick-hint, #pp-ai-modal, #pp-image-gallery')) return;
+      if (el.closest('#pp-panel, #pp-pick-overlay, #pp-pick-hint, #pp-ai-modal, #pp-image-gallery, #pp-row-picker')) return;
       const r = el.getBoundingClientRect();
       // Fall back to natural/attribute size for elements not yet laid out.
       const w = Math.round(r.width) || (el.naturalWidth || parseInt(el.getAttribute('width'), 10) || 0);
@@ -369,20 +384,31 @@
         if (n.querySelectorAll('img').length > 1) { n = null; break; }
         if (n.querySelector('h1,h2,h3,h4,h5,a,[class*="title"],[class*="content"]')) break;
       }
+      // React/Next sites wrap each card in single-child divs; climb through
+      // them so the card sits next to its sibling cards.
+      while (n && n.parentElement && n.parentElement !== document.body
+        && n.parentElement.children.length === 1 && n.parentElement.querySelectorAll('img').length === 1) n = n.parentElement;
       return n;
     }).filter(Boolean);
 
     for (const card of cardish) {
       const parent = card.parentElement;
       if (!parent || containers.has(parent)) continue;
-      if (parent.closest('#pp-panel, #pp-ai-modal, #pp-image-gallery')) continue;
+      if (parent.closest('#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-row-picker, [data-pp-copy]')) continue;
       // Siblings that structurally match: same tag, each has exactly one <img>.
       const sibs = Array.from(parent.children).filter(c =>
         c.tagName === card.tagName && c.querySelectorAll('img').length === 1);
       if (sibs.length < 2) continue;
-      // Reject if the "cards" are section-sized (a wrapper of carousels, etc.).
+      // Reject if the "cards" are section-sized (a wrapper of carousels, page
+      // sections that each happen to hold one banner image, etc.).
+      if (/^(SECTION|MAIN|HEADER|FOOTER|NAV|ASIDE|BODY)$/.test(card.tagName)) continue;
       const r0 = sibs[0].getBoundingClientRect();
       if (r0.height > vh * 0.7) continue;
+      if (r0.width > (window.innerWidth || 1200) * 0.7) continue;
+      // A card needs words: a heading, or a link with text (not image-only tiles).
+      const hasWords = c => Array.from(c.querySelectorAll('h1,h2,h3,h4,h5,h6,a[href],[class*="title"],[class*="headline"]'))
+        .some(n => (n.textContent || '').trim().length > 1);
+      if (!hasWords(sibs[0])) continue;
       containers.add(parent);
       // Score: favour MORE cards; mild bonus for reasonable card size. Avoid
       // rewarding giant blocks (that's what picked the wrong wrapper before).
@@ -391,16 +417,142 @@
         cardEls: sibs,
         cardTag: card.tagName,
         count: sibs.length,
+        visible: !!(parent.offsetWidth || parent.offsetHeight),
         score: sibs.length * 1000 + Math.min(r0.width * r0.height, 200000) / 1000
       });
     }
-    rows.sort((a, b) => b.score - a.score);
+    // Visible rows first (hidden tabs / menus after), then by score.
+    rows.sort((a, b) => (b.visible - a.visible) || (b.score - a.score));
     return rows;
   }
 
   function detectBestCardRow() {
     const rows = detectCardRows();
     return rows.length ? rows[0] : null;
+  }
+
+  // ---- Card-row templates: which parts of a card are image / title / text /
+  // button / link, as selectors relative to the card. Lets the engine fill a
+  // cloned card field by field, and the editor show one input per field.
+  const RS_FIELDS = [['image', 'Image'], ['title', 'Title'], ['text', 'Text'], ['cta', 'Button'], ['href', 'Link']];
+  const RS_STATE_CLASS = /^(is-|has-)|^(active|selected|current|open|show|visible|hidden|swiper-slide-)/;
+
+  // Selector for `node` relative to `card` (":scope" = the card itself).
+  function relSelector(card, node) {
+    if (!node) return '';
+    if (node === card) return ':scope';
+    const parts = [];
+    let n = node;
+    while (n && n !== card) {
+      const parent = n.parentElement;
+      if (!parent) return '';
+      let seg = n.tagName.toLowerCase();
+      const same = Array.from(parent.children).filter(c => c.tagName === n.tagName);
+      if (same.length > 1) seg += ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
+      parts.unshift(seg);
+      n = parent;
+    }
+    if (n !== card) return '';
+    const sel = ':scope > ' + parts.join(' > ');
+    try { return card.querySelector(sel) === node ? sel : ''; } catch (e) { return ''; }
+  }
+
+  function cardText(n) { return n ? (n.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
+
+  // Work out a card's fields from its first card.
+  function analyzeCard(card) {
+    const img = card.querySelector('img');
+    const isText = n => n && !n.querySelector('img') && cardText(n);
+    let title = Array.from(card.querySelectorAll('h1,h2,h3,h4,h5,h6')).find(isText)
+      || Array.from(card.querySelectorAll('[class*="title"],[class*="name"],[class*="heading"]')).find(n => isText(n) && !n.querySelector('h1,h2,h3,h4,h5,h6,p'));
+    const links = (card.tagName === 'A' ? [card] : []).concat(Array.from(card.querySelectorAll('a[href]')));
+    const link = links[0] || null;
+    // A button-like element with its own label (not the title, not wrapping it).
+    const cta = Array.from(card.querySelectorAll('a, button')).find(n =>
+      isText(n) && n !== title && !(title && n.contains(title)) && !(title && title.contains(n))) || null;
+    const text = Array.from(card.querySelectorAll('p, [class*="desc"], [class*="text"], [class*="subtitle"], [class*="summary"]')).find(n =>
+      isText(n) && n !== title && n !== cta && !(title && (title.contains(n) || n.contains(title))) && !(cta && (cta.contains(n) || n.contains(cta)))
+      && !n.querySelector('h1,h2,h3,h4,h5,h6')) || null;
+    const template = {};
+    if (img) template.image = relSelector(card, img);
+    if (title) template.title = relSelector(card, title);
+    if (text) template.text = relSelector(card, text);
+    if (cta) template.cta = relSelector(card, cta);
+    if (link) template.href = relSelector(card, link);
+    for (const k of Object.keys(template)) if (!template[k]) delete template[k];
+    return template;
+  }
+
+  // Read one card's current content through a template.
+  function readCard(card, template) {
+    const q = sel => { try { return sel ? card.querySelector(sel) : null; } catch (e) { return null; } };
+    const out = {};
+    const img = q(template.image);
+    if (img) out.image = img.currentSrc || img.src || '';
+    if (template.title) out.title = cardText(q(template.title));
+    if (template.text) out.text = cardText(q(template.text));
+    if (template.cta) out.cta = cardText(q(template.cta));
+    const a = q(template.href);
+    if (a) out.href = a.getAttribute('href') || '';
+    return out;
+  }
+
+  // Map an older {image, lines[]} card onto a template's fields (lines fill
+  // title, text, button in order).
+  function cardToTemplate(card, template) {
+    if (['title', 'text', 'cta', 'href'].some(k => card[k] !== undefined)) return card;
+    const lines = Array.isArray(card.lines) ? card.lines.slice() : [];
+    const out = { image: card.image || '' };
+    for (const k of ['title', 'text', 'cta']) if (template[k]) out[k] = lines.shift() || '';
+    if (template.href) out.href = '';
+    return out;
+  }
+
+  // A selector for a card-row container that survives tab switches and the
+  // like: prefer ids and data-* attributes, skip state classes (is-active…).
+  function stableRowSelector(container) {
+    const segFor = (n, withNth) => {
+      if (n.id) return '#' + CSS.escape(n.id);
+      let seg = n.tagName.toLowerCase();
+      const data = Array.from(n.attributes).find(a => /^data-/.test(a.name) && !/^data-pp/.test(a.name) && a.value && a.value.length < 60);
+      if (data) return seg + '[' + data.name + '="' + CSS.escape(data.value) + '"]';
+      const cls = (n.getAttribute('class') || '').split(/\s+/).filter(c => c && !RS_STATE_CLASS.test(c) && !/^(pp-|personalise)/.test(c)).slice(0, 2);
+      if (cls.length) seg += '.' + cls.map(c => CSS.escape(c)).join('.');
+      if (withNth && n.parentElement) {
+        const same = Array.from(n.parentElement.children).filter(c => c.tagName === n.tagName);
+        if (same.length > 1) seg += ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
+      }
+      return seg;
+    };
+    const unique = sel => { try { const m = document.querySelectorAll(sel); return m.length === 1 && m[0] === container; } catch (e) { return false; } };
+    const parts = [];
+    let n = container;
+    for (let depth = 0; n && n !== document.body && depth < 6; depth++) {
+      parts.unshift(segFor(n, false));
+      if (unique(parts.join(' > '))) return parts.join(' > ');
+      n = n.parentElement;
+    }
+    return uniqueSelector(container);
+  }
+
+  // Human label for a row: the nearest heading above it (and a tab name).
+  function describeRow(row) {
+    const c = row.container;
+    let label = '';
+    const panel = c.closest('[data-panel], [role="tabpanel"]');
+    for (let n = c; n && n !== document.body && !label; n = n.parentElement) {
+      let s = n.previousElementSibling;
+      while (s && !label) {
+        // Skip blocks with images (other card rows / tab panels): their h3s are
+        // card titles, not this row's section heading.
+        const h = s.matches('h1,h2,h3,h4') ? s : (s.querySelector('img') ? null : s.querySelector('h1,h2,h3,h4'));
+        if (h && cardText(h)) label = cardText(h);
+        s = s.previousElementSibling;
+      }
+    }
+    const tab = panel ? (panel.getAttribute('data-panel') || panel.getAttribute('aria-label') || '') : '';
+    const visible = !!(c.offsetWidth || c.offsetHeight);
+    return { label: label || 'Card row', tab: tab ? tab.charAt(0).toUpperCase() + tab.slice(1) : '', visible };
   }
 
   // Resolve a slot name to the concrete element to act on. `want` is 'text' or
@@ -434,7 +586,7 @@
   // REAL markup with real classes/attrs/text so it can write accurate selectors.
   function captureLiveHtml() {
     var clone = document.body.cloneNode(true);
-    var ours = clone.querySelectorAll('#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-pick-overlay, #pp-pick-hint, #pp-preapply, [id^="personalise-"]');
+    var ours = clone.querySelectorAll('#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-row-picker, #pp-pick-overlay, #pp-pick-hint, #pp-preapply, [id^="personalise-"]');
     for (var i = 0; i < ours.length; i++) ours[i].remove();
     var noise = clone.querySelectorAll('script, style, noscript, iframe, link[rel="stylesheet"]');
     for (var j = 0; j < noise.length; j++) noise[j].remove();
@@ -644,10 +796,22 @@
       const cards = Array.isArray(rule.action.cards) ? rule.action.cards : [];
       if (!cards.length) { console.warn('[personalise] recStrip has no cards'); return false; }
 
-      // Resolve the target row: explicit selector, else auto-detect the best one.
+      // Resolve the target row: the one we already hid (re-apply), else the
+      // chosen selector / label, else auto-detect. Our own copies never count.
+      const asRow = c => detectCardRows().find(r => r.container === c) || { container: c, cardEls: Array.from(c.children) };
       let row = null;
-      if (rule.action.target) {
-        try { const c = document.querySelector(rule.action.target); if (c) row = detectCardRows().find(r => r.container === c) || { container: c, cardEls: Array.from(c.children) }; } catch (e) { /* bad selector */ }
+      const hidden = document.querySelector('[data-pp-replaced="' + rule.id + '"]');
+      if (hidden) row = asRow(hidden);
+      if (!row && rule.action.target) {
+        try {
+          const c = Array.from(document.querySelectorAll(rule.action.target)).find(n => !n.closest('[data-pp-copy]'));
+          if (c) row = asRow(c);
+        } catch (e) { /* bad selector */ }
+        // Generated class names change on redeploys: fall back to the row's label.
+        if (!row && rule.action.targetLabel) row = detectCardRows().find(r => describeRow(r).label === rule.action.targetLabel) || null;
+        // A chosen row that isn't on this page: leave the page alone rather than
+        // replacing some other row.
+        if (!row && rule.action.mode !== 'add') { removeRecStripCopy(rule); console.warn('[personalise] recStrip: chosen row not found on this page'); return false; }
       }
       if (!row && rule.action.mode !== 'add') row = detectBestCardRow();
 
@@ -673,14 +837,27 @@
   };
 
   // -------------------- recStrip helpers --------------------
-  // Original innerHTML of each row we replaced, keyed by rule.id, so deleting the rule /
-  // reset can put the site back exactly as it was.
-  const __rsOriginals = new Map();
-
   // Fill one cloned card node from a {image, lines[]} spec, in place, setting
   // textContent only (no HTML injection). Maps lines onto the card's text
   // elements in document order.
-  function fillCard(cardEl, spec) {
+  function fillCard(cardEl, spec, template) {
+    const structured = template && ['title', 'text', 'cta', 'href'].some(k => spec[k] !== undefined);
+    if (structured) {
+      const q = sel => { try { return sel ? cardEl.querySelector(sel) : null; } catch (e) { return null; } };
+      const img = q(template.image) || cardEl.querySelector('img');
+      if (img && spec.image) {
+        img.src = spec.image; img.removeAttribute('srcset'); img.removeAttribute('loading');
+        const pic = img.closest('picture'); if (pic) pic.querySelectorAll('source').forEach(s => s.remove());
+      }
+      if (img && spec.title) img.alt = spec.title;
+      for (const k of ['title', 'text', 'cta']) {
+        const n = q(template[k]);
+        if (n && typeof spec[k] === 'string') n.textContent = spec[k];
+      }
+      const a = q(template.href);
+      if (a && spec.href) a.setAttribute('href', spec.href);
+      return;
+    }
     const img = cardEl.querySelector('img');
     if (img && spec.image) { img.src = spec.image; if (img.hasAttribute('srcset')) img.removeAttribute('srcset'); img.removeAttribute('loading'); }
     const lines = Array.isArray(spec.lines) ? spec.lines.slice() : [];
@@ -700,28 +877,105 @@
     }
   }
 
-  // Replace an existing card row's children with cloned, filled cards. Stashes
-  // the original once for restore.
+  // Detach from the site's own markup: we never edit the site's row. We build a
+  // copy of it, fill the copy, show it right after the original and hide the
+  // original. Frameworks (React/Next hydration, live refreshes, infinite
+  // scroll) can keep re-rendering their own row underneath without touching
+  // ours; guardRecStrip re-applies if they remove our copy or swap the row.
+  function ensureRecStripStyle() {
+    if (document.getElementById('pp-rs-style')) return;
+    const s = document.createElement('style'); s.id = 'pp-rs-style';
+    s.textContent = '[data-pp-replaced]{display:none !important}';
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  // The node in `rootB` at the same child-index path that `node` has in `rootA`.
+  function counterpart(rootA, rootB, node) {
+    const path = [];
+    for (let n = node; n && n !== rootA; n = n.parentElement) {
+      if (!n.parentElement) return null;
+      path.unshift(Array.prototype.indexOf.call(n.parentElement.children, n));
+    }
+    let m = rootB;
+    for (const i of path) m = m && m.children[i];
+    return m || null;
+  }
+
+  function removeRecStripCopy(rule) {
+    document.querySelectorAll('[data-pp-copy="' + rule.id + '"]').forEach(n => n.remove());
+    document.querySelectorAll('[data-pp-replaced="' + rule.id + '"]').forEach(n => n.removeAttribute('data-pp-replaced'));
+  }
+
   function recStripReplace(rule, row, cards) {
     const container = row.container;
-    if (!container) return false;
-    if (!__rsOriginals.has(rule.id)) __rsOriginals.set(rule.id, { html: container.innerHTML, selector: uniqueSelector(container) });
-    const template = (row.cardEls && row.cardEls[0]) || container.firstElementChild;
-    if (!template) return false;
-    const frag = document.createDocumentFragment();
-    for (const spec of cards) {
-      const clone = template.cloneNode(true);
-      fillCard(clone, spec);
-      frag.appendChild(clone);
-    }
-    container.replaceChildren(frag);
-    container.setAttribute('data-pp-recstrip', rule.id);
-    // Demo safety: links inside the replaced row shouldn't navigate.
-    container.addEventListener('click', (e) => {
+    if (!container || !container.parentElement) return false;
+    const originals = (row.cardEls && row.cardEls.length) ? row.cardEls : Array.from(container.children);
+    if (!originals.length) return false;
+    document.querySelectorAll('[data-pp-copy="' + rule.id + '"]').forEach(n => n.remove());
+    const copy = container.cloneNode(true);
+    copy.removeAttribute('data-pp-replaced');
+    copy.setAttribute('data-pp-copy', rule.id);
+    // The site's lazy-loader won't see our copy: load its images directly.
+    copy.querySelectorAll('img').forEach(im => {
+      im.removeAttribute('loading');
+      const ds = im.getAttribute('data-src');
+      if (ds && (!im.getAttribute('src') || /^data:/.test(im.getAttribute('src')))) im.setAttribute('src', ds);
+    });
+    const slots = originals.map(c => counterpart(container, copy, c)).filter(Boolean);
+    if (!slots.length) return false;
+    // Clone the card in the same slot (cycling), so a card with no image keeps
+    // that slot's own photo instead of repeating the first one.
+    const clones = cards.map((spec, i) => {
+      const clone = slots[i % slots.length].cloneNode(true);
+      fillCard(clone, spec, rule.action.template);
+      return clone;
+    });
+    // Swap cards in place, so anything else in the row (text-only teasers,
+    // inline <style> tags) stays put; extra cards follow the last one.
+    let last = null;
+    clones.forEach((clone, i) => {
+      if (i < slots.length) slots[i].replaceWith(clone); else last.after(clone);
+      last = clone;
+    });
+    for (let i = clones.length; i < slots.length; i++) slots[i].remove();
+    // Demo safety: links inside the personalised row shouldn't navigate.
+    copy.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a, button');
-      if (a && container.contains(a)) e.preventDefault();
+      if (a && copy.contains(a)) e.preventDefault();
     }, true);
+    ensureRecStripStyle();
+    container.setAttribute('data-pp-replaced', rule.id);
+    container.after(copy);
+    guardRecStrip(rule);
     return true;
+  }
+
+  // Re-apply a replaced row when the page re-renders it. Debounced, capped so we
+  // never fight the site in a loop, and dropped when the page changes.
+  const __rsGuards = new Map();
+  const RS_MAX_REAPPLY = 25;
+  function guardRecStrip(rule) {
+    if (__rsGuards.has(rule.id)) return;
+    const pageUrl = window.location.href;
+    let reapplies = 0, timer = null;
+    const stop = () => { const g = __rsGuards.get(rule.id); if (g) { g.obs.disconnect(); clearTimeout(timer); __rsGuards.delete(rule.id); } };
+    const check = () => {
+      if (window.location.href !== pageUrl) { stop(); removeRecStripCopy(rule); return; }
+      const copy = document.querySelector('[data-pp-copy="' + rule.id + '"]');
+      const orig = document.querySelector('[data-pp-replaced="' + rule.id + '"]');
+      if (copy && orig && orig.nextElementSibling === copy) return; // intact
+      if (++reapplies > RS_MAX_REAPPLY) {
+        // Fail safe: show the site's own row rather than an empty gap.
+        stop(); removeRecStripCopy(rule);
+        console.warn('[personalise] recStrip: the page keeps re-rendering this row; stopped re-applying');
+        return;
+      }
+      console.info('[personalise] recStrip: row was re-rendered, re-applying');
+      if (!actions.recStrip(rule)) { stop(); removeRecStripCopy(rule); }
+    };
+    const obs = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(check, 150); });
+    obs.observe(document.body, { childList: true, subtree: true });
+    __rsGuards.set(rule.id, { obs });
   }
 
   // Generic fallback strip when there's no existing card row to clone.
@@ -735,7 +989,8 @@
     for (const spec of cards) {
       const card = document.createElement('div'); card.className = 'pp-rs__card';
       if (spec.image) { const im = document.createElement('img'); im.src = spec.image; im.alt = ''; card.appendChild(im); }
-      for (const line of (spec.lines || [])) { const p = document.createElement('div'); p.className = 'pp-rs__line'; p.textContent = line; card.appendChild(p); }
+      const lines = (spec.lines && spec.lines.length) ? spec.lines : [spec.title, spec.text, spec.cta].filter(Boolean);
+      for (const line of lines) { const p = document.createElement('div'); p.className = 'pp-rs__line'; p.textContent = line; card.appendChild(p); }
       cardsWrap.appendChild(card);
     }
     content.appendChild(cardsWrap);
@@ -749,16 +1004,12 @@
     return true;
   }
 
-  // Restore a replaced row to its original markup (rule deleted / reset), and remove
-  // any injected generic strip.
+  // Undo a recommendations rule: stop its guard, drop our copy, unhide the
+  // site's row, and remove any injected generic strip.
   function restoreRecStrip(rule) {
-    const stash = __rsOriginals.get(rule.id);
-    if (stash) {
-      let container = null;
-      try { container = document.querySelector('[data-pp-recstrip="' + rule.id + '"]') || (stash.selector && document.querySelector(stash.selector)); } catch (e) { container = null; }
-      if (container) { container.innerHTML = stash.html; container.removeAttribute('data-pp-recstrip'); }
-      __rsOriginals.delete(rule.id);
-    }
+    const g = __rsGuards.get(rule.id);
+    if (g) { g.obs.disconnect(); __rsGuards.delete(rule.id); }
+    removeRecStripCopy(rule);
     const injected = document.getElementById('personalise-recstrip-' + rule.id);
     if (injected) injected.remove();
   }
@@ -1062,7 +1313,13 @@
     [id^="personalise-recstrip-"] .pp-rs__line { margin-top: 4px; }
 
     /* Per-card editor block in the panel */
-    #pp-panel .pp-rs-cardedit { border-radius: 12px; padding: 8px; margin-bottom: 8px; background: var(--pp-bg); }
+    #pp-panel .pp-rs-cardedit { border-radius: 12px; padding: 8px 10px 2px; margin-bottom: 8px; background: var(--pp-bg); }
+    #pp-panel .pp-rs-cardedit input { background-color: #fff; }
+    #pp-panel .pp-rs-cardhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    #pp-panel .pp-rs-thumb { flex: 0 0 34px; height: 34px; border-radius: 8px; background: #e5e5ea center / cover no-repeat; }
+    #pp-panel .pp-rs-cardnum { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #pp-panel .pp-place { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 9px; background: var(--pp-accent-soft); color: var(--pp-accent);
+      font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
     /* Trainer row (inside its card) + iOS switch */
     #pp-panel .pp-trainer-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -1141,6 +1398,33 @@
       background-repeat: no-repeat; background-color: #eee; }
     #pp-image-gallery .pp-ig-meta { padding: 6px 8px; font-size: 11px; color: #555;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Recommendation placement picker (same max z-index; appended after the panel) */
+    #pp-row-picker { --pp-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif; }
+    #pp-row-picker .pp-rp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 2147483647; }
+    #pp-row-picker .pp-rp-box { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 2147483647;
+      width: min(720px, 94vw); max-height: 86vh; display: flex; flex-direction: column; overflow: hidden;
+      background: #f2f2f7; border-radius: 20px; box-shadow: 0 24px 60px rgba(0,0,0,0.3);
+      font: 13px/1.4 var(--pp-font); color: #1c1c1e; -webkit-font-smoothing: antialiased; }
+    #pp-row-picker .pp-rp-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 10px; }
+    #pp-row-picker .pp-rp-head h3 { margin: 0; font: 700 18px/1.3 var(--pp-font); letter-spacing: -0.01em; }
+    #pp-row-picker .pp-rp-close { width: 28px; height: 28px; border-radius: 50%; border: 0; cursor: pointer;
+      background: rgba(118,118,128,0.12); color: #3c3c43; font: 600 18px/28px var(--pp-font); padding: 0; }
+    #pp-row-picker .pp-rp-list { padding: 4px 20px 8px; overflow-y: auto; display: grid; gap: 10px; }
+    #pp-row-picker .pp-rp-empty { padding: 32px; text-align: center; color: #8e8e93; background: #fff; border-radius: 14px; }
+    #pp-row-picker .pp-rp-opt { display: block; width: 100%; text-align: left; padding: 12px; border: 2px solid transparent;
+      border-radius: 14px; background: #fff; cursor: pointer; font: inherit; color: inherit; transition: border-color .15s, box-shadow .15s; }
+    #pp-row-picker .pp-rp-opt:hover { border-color: #007aff; box-shadow: 0 6px 18px rgba(0,122,255,0.15); }
+    #pp-row-picker .pp-rp-opt__top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    #pp-row-picker .pp-rp-opt__name { font-weight: 600; font-size: 14px; }
+    #pp-row-picker .pp-rp-opt__meta { font-size: 12px; color: #8e8e93; white-space: nowrap; }
+    #pp-row-picker .pp-rp-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+    #pp-row-picker .pp-rp-card { min-width: 0; }
+    #pp-row-picker .pp-rp-card__img { aspect-ratio: 4 / 3; border-radius: 8px; background: #e5e5ea center / cover no-repeat; }
+    #pp-row-picker .pp-rp-card__cap { margin-top: 4px; font-size: 11px; color: #3c3c43; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #pp-row-picker .pp-rp-foot { padding: 8px 20px 16px; text-align: center; }
+    #pp-row-picker .pp-rp-link { border: 0; background: transparent; color: #007aff; font: 500 13px/1.4 var(--pp-font); cursor: pointer; padding: 6px; }
+    #pp-row-picker .pp-rp-link:hover { text-decoration: underline; }
   `;
 
   // -------------------- DOM helpers --------------------
@@ -1295,6 +1579,85 @@
     document.body.appendChild(wrap);
     backdrop.addEventListener('click', close);
     const esc = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc, true); } };
+    document.addEventListener('keydown', esc, true);
+  }
+
+  // -------------------- Recommendation placement picker --------------------
+  // Lists up to 5 card rows on the page with a preview of their current cards
+  // and detected fields. onPicked(row, template, items) on choice; "click on the
+  // page instead" falls back to startPick and maps the click to its row.
+  function startRowPicker(onPicked) {
+    const existing = document.getElementById('pp-row-picker');
+    if (existing) existing.remove();
+    const rows = detectCardRows().slice(0, 5);
+
+    const wrap = document.createElement('div'); wrap.id = 'pp-row-picker';
+    const backdrop = document.createElement('div'); backdrop.className = 'pp-rp-backdrop';
+    const box = document.createElement('div'); box.className = 'pp-rp-box';
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    const close = () => { flashElement(null, false); wrap.remove(); document.removeEventListener('keydown', esc, true); };
+
+    const head = document.createElement('div'); head.className = 'pp-rp-head';
+    const h = document.createElement('h3'); h.textContent = 'Where should the recommendations go?';
+    const closeBtn = document.createElement('button'); closeBtn.className = 'pp-rp-close';
+    closeBtn.textContent = '×'; closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.addEventListener('click', close);
+    head.appendChild(h); head.appendChild(closeBtn);
+    box.appendChild(head);
+
+    const list = document.createElement('div'); list.className = 'pp-rp-list';
+    if (!rows.length) {
+      const empty = document.createElement('div'); empty.className = 'pp-rp-empty';
+      empty.textContent = 'No rows of cards found on this page.';
+      list.appendChild(empty);
+    }
+    rows.forEach(row => {
+      const template = analyzeCard(row.cardEls[0]);
+      const items = row.cardEls.map(c => readCard(c, template));
+      const info = describeRow(row);
+      const opt = document.createElement('button'); opt.type = 'button'; opt.className = 'pp-rp-opt';
+      const top = document.createElement('div'); top.className = 'pp-rp-opt__top';
+      const name = document.createElement('div'); name.className = 'pp-rp-opt__name';
+      name.textContent = info.label + (info.tab ? ' · ' + info.tab : '');
+      const meta = document.createElement('div'); meta.className = 'pp-rp-opt__meta';
+      meta.textContent = row.count + ' cards · ' + RS_FIELDS.filter(([k]) => template[k]).map(([, l]) => l.toLowerCase()).join(', ')
+        + (info.visible ? '' : ' · hidden tab');
+      top.appendChild(name); top.appendChild(meta);
+      const strip = document.createElement('div'); strip.className = 'pp-rp-strip';
+      items.slice(0, 5).forEach(it => {
+        const c = document.createElement('div'); c.className = 'pp-rp-card';
+        const t = document.createElement('div'); t.className = 'pp-rp-card__img';
+        if (it.image) t.style.backgroundImage = `url('${it.image.replace(/'/g, "\\'")}')`;
+        const cap = document.createElement('div'); cap.className = 'pp-rp-card__cap';
+        cap.textContent = it.title || it.cta || '';
+        c.appendChild(t); c.appendChild(cap); strip.appendChild(c);
+      });
+      opt.appendChild(top); opt.appendChild(strip);
+      opt.addEventListener('mouseenter', () => flashElement(row.container, true));
+      opt.addEventListener('mouseleave', () => flashElement(row.container, false));
+      opt.addEventListener('click', (e) => { e.stopPropagation(); close(); onPicked(row, template, items); });
+      list.appendChild(opt);
+    });
+    box.appendChild(list);
+
+    const foot = document.createElement('div'); foot.className = 'pp-rp-foot';
+    const pickBtn = document.createElement('button'); pickBtn.type = 'button'; pickBtn.className = 'pp-rp-link';
+    pickBtn.textContent = 'Not listed? Click a card on the page instead';
+    pickBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); close();
+      startPick((sel, elc) => {
+        const row = detectCardRows().find(r => r.container.contains(elc));
+        if (!row) { alert('That isn’t inside a row of cards — try clicking one of the cards.'); return; }
+        const template = analyzeCard(row.cardEls[0]);
+        onPicked(row, template, row.cardEls.map(c => readCard(c, template)));
+      });
+    });
+    foot.appendChild(pickBtn);
+    box.appendChild(foot);
+
+    wrap.appendChild(backdrop); wrap.appendChild(box);
+    document.body.appendChild(wrap);
+    backdrop.addEventListener('click', close);
     document.addEventListener('keydown', esc, true);
   }
 
@@ -1854,6 +2217,7 @@
     const delBtn = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete rule' });
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (rule.action.type === 'recStrip') restoreRecStrip(rule);
       config.thresholdRules = config.thresholdRules.filter(r => r.id !== rule.id);
       state.firedRules = state.firedRules.filter(id => id !== rule.id);
       saveConfig(); saveState(); renderPanel();
@@ -2104,11 +2468,62 @@
       if (!Array.isArray(rule.action.cards)) rule.action.cards = [];
       if (!rule.action.mode) rule.action.mode = 'replace';
 
+      // Where: the card row to replace, chosen from a picker with previews.
+      let placeRow = null;
+      if (rule.action.target) {
+        try { const c = document.querySelector(rule.action.target); if (c) placeRow = detectCardRows().find(r => r.container === c) || { container: c, cardEls: Array.from(c.children), count: c.children.length }; } catch (e) { placeRow = null; }
+      }
+      const autoRow = (!rule.action.target && rule.action.mode !== 'add') ? detectBestCardRow() : null;
+      const shown = placeRow || autoRow;
+      const info = shown ? describeRow(shown) : null;
+      const placeText = rule.action.mode === 'add' ? 'Adds a new strip'
+        : shown ? ((placeRow ? '' : 'Auto: ') + info.label + (info.tab ? ' · ' + info.tab : '') + ' · ' + shown.count + ' cards')
+        : (rule.action.target ? 'Not on this page' : 'No card row found');
+      const placeField = el('div', { className: 'pp-thr-field' });
+      placeField.appendChild(el('label', { text: 'Where' }));
+      const placeChip = el('div', { className: 'pp-place', text: placeText });
+      if (shown) {
+        placeChip.title = 'Hover to highlight it on the page';
+        placeChip.addEventListener('mouseenter', () => flashElement(shown.container, true));
+        placeChip.addEventListener('mouseleave', () => flashElement(shown.container, false));
+      }
+      const chooseBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Choose…' });
+      chooseBtn.title = 'Pick which row of cards to replace';
+      chooseBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        startRowPicker((row, template, items) => {
+          rule.action.target = stableRowSelector(row.container);
+          const picked = describeRow(row).label;
+          if (picked && picked !== 'Card row') rule.action.targetLabel = picked; else delete rule.action.targetLabel;
+          rule.action.template = template;
+          rule.action.mode = 'replace';
+          const hasCards = rule.action.cards.some(c => c.image || c.title || (c.lines && c.lines.length));
+          rule.action.cards = (!hasCards || confirm('Start from the ' + items.length + ' cards in this row? (Cancel keeps your current cards.)'))
+            ? items
+            : rule.action.cards.map(c => cardToTemplate(c, template));
+          saveConfig(); renderPanel();
+        });
+      });
+      placeField.appendChild(placeChip);
+      placeField.appendChild(chooseBtn);
+      wrap.appendChild(placeField);
+
+      const modeField = el('div', { className: 'pp-thr-field' });
+      modeField.appendChild(el('label', { text: 'Mode' }));
+      const modeSel = document.createElement('select');
+      for (const [v, l] of [['replace', 'Replace that row'], ['add', 'Add a new strip']]) {
+        const o = document.createElement('option'); o.value = v; o.textContent = l;
+        if (rule.action.mode === v) o.selected = true; modeSel.appendChild(o);
+      }
+      modeSel.addEventListener('change', () => { rule.action.mode = modeSel.value; saveConfig(); renderPanel(); });
+      modeField.appendChild(modeSel);
+      wrap.appendChild(modeField);
+
       const intentField = el('div');
       const intentArea = el('textarea', { className: 'pp-code pp-intent' });
       intentArea.style.height = '44px';
       intentArea.value = rule.action.intent || '';
-      intentArea.placeholder = 'e.g. 4 Sri Lanka specialists / related tours';
+      intentArea.placeholder = 'e.g. 6 Sri Lanka destinations';
       intentArea.spellcheck = false;
       intentArea.addEventListener('change', () => { rule.action.intent = intentArea.value; saveConfig(); });
       intentField.appendChild(intentArea);
@@ -2116,20 +2531,16 @@
 
       const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Draft cards with gateway') });
       wrap.appendChild(designBtn);
-      // Detection status: show which row we'll replace.
-      const best = detectBestCardRow();
-      const detText = rule.action.target
-        ? ('Target row: ' + rule.action.target)
-        : (best ? ('Will replace detected card row (' + best.count + ' cards)') : 'No card row detected — a new strip will be added.');
-      const designStatus = el('div', { className: 'pp-hint', text: detText });
+      const designStatus = el('div', { className: 'pp-hint', text: '' });
       wrap.appendChild(designStatus);
       designBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         rule.action.intent = intentArea.value;
         const orig = designBtn.textContent; designBtn.disabled = true; designBtn.textContent = gatewayKey() ? 'Drafting…' : 'Waiting for answer…';
         try {
-          const out = await gatewayDesignRecStrip(rule.action.intent);
-          rule.action.cards = out.cards; rule.action.mode = out.mode; rule.action.target = out.target || '';
+          const out = await gatewayDesignRecStrip(rule.action.intent, rule.action);
+          rule.action.cards = out.cards;
+          if (!rule.action.template) { rule.action.mode = out.mode; rule.action.target = out.target || ''; }
           saveConfig(); renderPanel();
         } catch (err) {
           designBtn.disabled = false; designBtn.textContent = orig;
@@ -2137,40 +2548,27 @@
         }
       });
 
-      // Mode toggle + Pick row.
-      const modeField = el('div', { className: 'pp-thr-field' });
-      modeField.appendChild(el('label', { text: 'Mode' }));
-      const modeSel = document.createElement('select');
-      for (const [v, l] of [['replace', 'Replace existing row'], ['add', 'Add a new strip']]) {
-        const o = document.createElement('option'); o.value = v; o.textContent = l;
-        if (rule.action.mode === v) o.selected = true; modeSel.appendChild(o);
-      }
-      modeSel.addEventListener('change', () => { rule.action.mode = modeSel.value; saveConfig(); });
-      const pickRowBtn = el('button', { className: 'pp-btn pp-btn--sm', text: 'Pick row' });
-      pickRowBtn.title = 'Click a card on the page; its row becomes the target';
-      pickRowBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        startPick((sel, elc) => {
-          // Map the clicked element up to its card-row container.
-          const row = detectCardRows().find(r => r.container.contains(elc)) ;
-          rule.action.target = row ? uniqueSelector(row.container) : sel;
-          saveConfig(); renderPanel();
-        });
-      });
-      modeField.appendChild(modeSel);
-      modeField.appendChild(pickRowBtn);
-      wrap.appendChild(modeField);
-
-      // Per-card editors.
+      // Cards: one input per detected field (template), else free-form lines.
+      const tpl = rule.action.template;
+      const fields = tpl ? RS_FIELDS.filter(([k]) => tpl[k]) : null;
       wrap.appendChild(el('div', { className: 'pp-rule-meta', text: 'Cards (' + rule.action.cards.length + ')' }));
       rule.action.cards.forEach((card, idx) => {
-        if (!Array.isArray(card.lines)) card.lines = [];
         const cardBox = el('div', { className: 'pp-rs-cardedit' });
-        // Image row: url + Browse + remove-card
+        const headRow = el('div', { className: 'pp-rs-cardhead' });
+        const thumb = el('div', { className: 'pp-rs-thumb' });
+        if (card.image) thumb.style.backgroundImage = `url('${String(card.image).replace(/'/g, "\\'")}')`;
+        headRow.appendChild(thumb);
+        headRow.appendChild(el('span', { className: 'pp-rs-cardnum', text: (card.title || (card.lines && card.lines[0])) || ('Card ' + (idx + 1)) }));
+        const delCard = el('button', { className: 'pp-icon', text: '×', title: 'Remove card' });
+        delCard.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.splice(idx, 1); saveConfig(); renderPanel(); });
+        headRow.appendChild(delCard);
+        cardBox.appendChild(headRow);
+
+        // Image: url + Browse (pick from the page's images).
         const imgRow = el('div', { className: 'pp-thr-field' });
-        imgRow.appendChild(el('label', { text: '#' + (idx + 1) + ' img' }));
+        imgRow.appendChild(el('label', { text: 'Image' }));
         const imgIn = el('input', { type: 'text', value: card.image || '', placeholder: 'image URL' });
-        imgIn.addEventListener('change', () => { card.image = imgIn.value; saveConfig(); });
+        imgIn.addEventListener('change', () => { card.image = imgIn.value.trim(); saveConfig(); renderPanel(); });
         const browse = el('button', { className: 'pp-btn pp-btn--sm', text: 'Browse' });
         browse.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -2180,22 +2578,37 @@
             saveConfig(); renderPanel();
           });
         });
-        const delCard = el('button', { className: 'pp-icon', text: '×', title: 'Remove card' });
-        delCard.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.splice(idx, 1); saveConfig(); renderPanel(); });
-        imgRow.appendChild(imgIn); imgRow.appendChild(browse); imgRow.appendChild(delCard);
+        imgRow.appendChild(imgIn); imgRow.appendChild(browse);
         cardBox.appendChild(imgRow);
-        // Text lines
-        const linesText = el('textarea', { className: 'pp-code' });
-        linesText.style.height = '46px';
-        linesText.value = card.lines.join('\n');
-        linesText.placeholder = 'One line of text per row\n(name, title, blurb…)';
-        linesText.spellcheck = false;
-        linesText.addEventListener('change', () => { card.lines = linesText.value.split('\n').map(s => s.trim()).filter(Boolean); saveConfig(); });
-        cardBox.appendChild(linesText);
+
+        if (fields) {
+          for (const [k, label] of fields) {
+            if (k === 'image') continue;
+            const row = el('div', { className: 'pp-thr-field' });
+            row.appendChild(el('label', { text: label }));
+            const inp = el('input', { type: 'text', value: card[k] || '', placeholder: k === 'href' ? 'https://… or /page' : label });
+            inp.addEventListener('change', () => { card[k] = inp.value; saveConfig(); if (k === 'title') renderPanel(); });
+            row.appendChild(inp);
+            cardBox.appendChild(row);
+          }
+        } else {
+          if (!Array.isArray(card.lines)) card.lines = [];
+          const linesText = el('textarea', { className: 'pp-code' });
+          linesText.style.height = '46px';
+          linesText.value = card.lines.join('\n');
+          linesText.placeholder = 'One line of text per row\n(name, title, blurb…)';
+          linesText.spellcheck = false;
+          linesText.addEventListener('change', () => { card.lines = linesText.value.split('\n').map(s => s.trim()).filter(Boolean); saveConfig(); });
+          cardBox.appendChild(linesText);
+        }
         wrap.appendChild(cardBox);
       });
       const addCardBtn = el('button', { className: 'pp-btn pp-btn--sm', text: '+ Add card' });
-      addCardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); rule.action.cards.push({ image: '', lines: [] }); saveConfig(); renderPanel(); });
+      addCardBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        rule.action.cards.push(fields ? Object.fromEntries(fields.map(([k]) => [k, ''])) : { image: '', lines: [] });
+        saveConfig(); renderPanel();
+      });
       wrap.appendChild(addCardBtn);
 
     } else if (rule.action.type === 'runScript') {
@@ -2290,6 +2703,7 @@
           e.stopPropagation();
           config.topics = config.topics.filter(x => x.id !== t.id);
           config.urlRules = config.urlRules.filter(r => r.topicId !== t.id);
+          config.thresholdRules.filter(r => r.topicId === t.id && r.action.type === 'recStrip').forEach(restoreRecStrip);
           config.thresholdRules = config.thresholdRules.filter(r => r.topicId !== t.id);
           delete state.scores[t.id];
           saveConfig(); saveState(); renderPanel();
@@ -2979,8 +3393,40 @@ Config -> Save/load story -> Import.`;
   // existing card row to match (count + sample text) so the model mirrors the
   // site's tone/length; the engine clones that row to render. Returns
   // { mode, target, count, cards:[{image, lines[]}] }.
-  async function gatewayDesignRecStrip(intent) {
+  async function gatewayDesignRecStrip(intent, action) {
     const host = window.location.hostname || '(local)';
+    // With a chosen placement, ask for exactly that row's fields, using the
+    // cards currently in it as examples of length and tone.
+    const tpl = action && action.template;
+    if (tpl && Object.keys(tpl).length) {
+      const keys = RS_FIELDS.map(([k]) => k).filter(k => tpl[k]);
+      const pick = c => Object.fromEntries(keys.map(k => [k, String(c[k] || '')]));
+      const current = (action.cards || []).filter(c => c.title || c.image);
+      const count = Math.max(1, Math.min(8, current.length || 4));
+      const describe = {
+        image: '"image": a public, hotlink-safe photo URL that you VERIFY resolves (HTTP 200, image content-type) before using it; if you cannot verify one, use ""',
+        title: '"title": the card heading (a short name)',
+        text: '"text": one short descriptive line',
+        cta: '"cta": the button label, 1-4 words',
+        href: '"href": a real page on ' + host + ' for this item if you can find one, else "#"'
+      };
+      const system = 'You write content for a row of recommendation cards on a web page. '
+        + 'Return ONLY a JSON object: {"cards":[{' + keys.map(k => '"' + k + '":"..."').join(',') + '}]}. Fields:\n'
+        + keys.map(k => '- ' + describe[k]).join('\n')
+        + '\nMatch the length and tone of the example cards. No markup, no HTML.';
+      const prompt = 'Website: ' + host + '\n'
+        + (document.title ? 'Page title: ' + document.title + '\n' : '')
+        + (current.length ? 'Example cards currently in this row (match their style):\n' + JSON.stringify(current.slice(0, 3).map(pick), null, 1) + '\n' : '')
+        + 'Number of cards: ' + count + '\n'
+        + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page')
+        + '\n\nReturn only the JSON object.';
+      const parsed = await aiAgent(system + '\n\n' + prompt,
+        { cards: [Object.fromEntries(keys.map(k => [k, 'string']))] },
+        { host: host, title: document.title, count: count, intent: intent || '' });
+      const raw = Array.isArray(parsed && parsed.cards) ? parsed.cards : [];
+      if (!raw.length) throw new Error('No cards came back.');
+      return { cards: raw.map(c => pick(c || {})) };
+    }
     const row = detectBestCardRow();
     let targetSel = '', count = 4, sample = '';
     if (row) {
