@@ -315,13 +315,17 @@
   // <video poster> (common for hero banners). Skips our own panel/overlays,
   // tiny or hidden images, dedupes by element. Returns
   // [{ el, kind:'img'|'bg'|'video', src, w, h }], largest rendered area first.
-  function collectPageImages() {
+  // { renderedOnly: true } drops images that aren't laid out on this page right
+  // now (inside closed menus, hidden tabs, display:none wrappers).
+  function collectPageImages(opts) {
+    const renderedOnly = !!(opts && opts.renderedOnly);
     const out = [];
     const seen = new Set();
     const MIN = 24; // px — ignore icons/tracking pixels
     function consider(el, kind, src) {
       if (!src || seen.has(el)) return;
-      if (el.closest('#pp-panel, #pp-pick-overlay, #pp-pick-hint, #pp-ai-modal, #pp-image-gallery, #pp-row-picker')) return;
+      if (el.closest('#pp-panel, #pp-pick-overlay, #pp-pick-hint, #pp-ai-modal, #pp-image-gallery, #pp-row-picker, [data-pp-copy]')) return;
+      if (renderedOnly && (!el.getClientRects().length || el.closest('[aria-hidden="true"], [inert], [data-pp-replaced]'))) return;
       const r = el.getBoundingClientRect();
       // Fall back to natural/attribute size for elements not yet laid out.
       const w = Math.round(r.width) || (el.naturalWidth || parseInt(el.getAttribute('width'), 10) || 0);
@@ -343,15 +347,183 @@
     return out;
   }
 
+  // -------------------- Site image library --------------------
+  // Every real content image that loads while you walk the site is remembered
+  // (localStorage, so per site), so image pickers can offer the site's own
+  // photos from any page, and AI drafts can reuse images known to load.
+  const IMAGES_STORAGE_KEY = 'personalise::images';
+  const IMG_LIB_MAX = 500;
+  const IMG_LIB_MIN_W = 160, IMG_LIB_MIN_H = 100; // skip icons, logos, avatars
+  let __imgLib = null;
+  function imageLibrary() {
+    if (!__imgLib) { const v = loadJSON(IMAGES_STORAGE_KEY, []); __imgLib = Array.isArray(v) ? v : []; }
+    return __imgLib;
+  }
+  // One entry per picture: drop the query string and CDN resize segments
+  // (/cdn-cgi/image/width=1424,.../) so the same photo at another size dedupes.
+  function imageKey(src) {
+    try {
+      const u = new URL(src, location.href);
+      return (u.host + u.pathname.replace(/\/cdn-cgi\/image\/[^/]+\//, '/')).toLowerCase();
+    } catch (e) { return src; }
+  }
+  // Images we put on the page ourselves (swaps, rec cards) aren't the site's.
+  function configImageKeys() {
+    const keys = new Set();
+    for (const r of (config && config.thresholdRules) || []) {
+      const a = r.action || {};
+      if (a.image) keys.add(imageKey(a.image));
+      for (const c of Array.isArray(a.cards) ? a.cards : []) if (c && c.image) keys.add(imageKey(c.image));
+    }
+    return keys;
+  }
+  let __imgLibSaveTimer = null;
+  function harvestImages(els) {
+    if (ui.collectImages === false) return;
+    const lib = imageLibrary();
+    const byKey = new Map(lib.map((e, i) => [e.k, i]));
+    const ours = configImageKeys();
+    let changed = false;
+    for (const el of els) {
+      if (!(el instanceof Element) || el.closest(RS_SKIP + ', #pp-pick-overlay, #pp-pick-hint, [data-pp-replaced]')) continue;
+      let src = '', w = 0, h = 0, alt = '';
+      if (el.tagName === 'IMG') {
+        if (!el.complete || !el.naturalWidth) continue;
+        src = el.currentSrc || el.src; w = el.naturalWidth; h = el.naturalHeight; alt = el.getAttribute('alt') || '';
+      } else {
+        src = bgImageUrl(el); const r = el.getBoundingClientRect(); w = Math.round(r.width); h = Math.round(r.height);
+        alt = el.getAttribute('aria-label') || '';
+      }
+      if (!src || /^(data|blob):/.test(src) || /\.svg(\?|$)/i.test(src) || w < IMG_LIB_MIN_W || h < IMG_LIB_MIN_H) continue;
+      const k = imageKey(src);
+      if (ours.has(k)) continue;
+      const at = byKey.get(k);
+      if (at !== undefined) {
+        const e = lib[at];
+        // Keep the largest copy seen; refresh recency.
+        if (w > e.w) { e.src = src; e.w = w; e.h = h; }
+        if (!e.alt && alt) e.alt = alt;
+        e.t = Date.now(); changed = true;
+        continue;
+      }
+      byKey.set(k, lib.length);
+      lib.push({ k, src, w, h, alt: alt.slice(0, 120), page: location.pathname, title: (document.title || '').slice(0, 80), t: Date.now() });
+      changed = true;
+    }
+    if (!changed) return;
+    if (lib.length > IMG_LIB_MAX) { lib.sort((a, b) => b.t - a.t); lib.length = IMG_LIB_MAX; }
+    clearTimeout(__imgLibSaveTimer);
+    __imgLibSaveTimer = setTimeout(() => saveJSON(IMAGES_STORAGE_KEY, imageLibrary()), 1000);
+  }
+  function harvestPageImages() {
+    harvestImages(Array.from(document.images));
+    harvestImages(collectPageImages().filter(i => i.kind === 'bg').map(i => i.el));
+  }
+  // Lazy-loaded images fire `load` as you scroll: catch them as they arrive.
+  function installImageHarvest() {
+    document.addEventListener('load', (e) => { if (e.target && e.target.tagName === 'IMG') harvestImages([e.target]); }, true);
+    setTimeout(harvestPageImages, 1500);
+    window.addEventListener('load', () => setTimeout(harvestPageImages, 500));
+  }
+  function clearImageLibrary() { __imgLib = []; saveJSON(IMAGES_STORAGE_KEY, []); }
+  // Prompt block listing library images for an AI draft: the ones whose alt
+  // text / page best match the intent first, then the most recent; capped.
+  function libraryForPrompt(intent, max) {
+    const lib = imageLibrary();
+    if (!lib.length) return '';
+    const words = String(intent || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2);
+    const hay = e => (e.alt + ' ' + e.page + ' ' + e.title).toLowerCase();
+    const score = e => words.reduce((s, w) => s + (hay(e).includes(w) ? 1 : 0), 0);
+    const list = lib.slice().sort((a, b) => (score(b) - score(a)) || (b.t - a.t)).slice(0, max || 40);
+    return 'Images from this website (they are known to load; PREFER one of these when its description fits the card, and use each at most once):\n'
+      + list.map(e => '- ' + e.src + (e.alt ? ' | ' + e.alt : '') + ' | seen on ' + e.page).join('\n') + '\n';
+  }
+
   // Detect repeating "card row" containers on the page — the natural homes for
   // a recommendations strip. A card row = a container with >=2 direct-child
   // elements that each contain an <img> AND a heading or link. We clone one of
   // these cards to make personalised recs blend into the site's own styling.
+  const RS_SKIP = '#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-row-picker, [data-pp-copy]';
+  const RS_BLOCK_TAG = /^(SECTION|MAIN|HEADER|FOOTER|NAV|ASIDE|BODY)$/;
+  // A card needs words: a heading, or a link with text (not image-only tiles).
+  const hasWords = c => Array.from(c.querySelectorAll('h1,h2,h3,h4,h5,h6,a[href],[class*="title"],[class*="headline"]'))
+    .some(n => (n.textContent || '').trim().length > 1);
+
   function detectCardRows() {
     const rows = [];
     const containers = new Set();
     const vh = window.innerHeight || 800;
-    // A real "card" holds exactly ONE image (not a nested group of cards) and a
+
+    // Card families: sites build cards from one component, so its base class
+    // repeats across the page (the Economist's teaser, ~70 times on an edition
+    // page). Any container holding members of a family is a row, even when
+    // most of them have no image or the section has only one card.
+    const families = new Map();
+    for (const el of document.querySelectorAll('[class]')) {
+      if (RS_BLOCK_TAG.test(el.tagName) || el.closest(RS_SKIP + ', nav, footer, [role="contentinfo"]')) continue;
+      const base = (el.getAttribute('class') || '').split(/\s+/).find(c => c && !RS_STATE_CLASS.test(c) && !/^(pp-|personalise)/.test(c));
+      if (!base) continue;
+      if (!families.has(base)) families.set(base, []);
+      families.get(base).push(el);
+    }
+    // One title, at most one image, a link: a single card, not a section.
+    const isCard = el => el.querySelectorAll('img').length <= 1
+      && el.querySelectorAll('h1,h2,h3,h4,h5,h6').length <= 1
+      && (el.matches('a[href]') || el.querySelector('a[href]'))
+      && Array.from(el.querySelectorAll('h1,h2,h3,h4,h5,h6,[class*="title"],[class*="headline"]')).some(n => cardText(n).length > 1);
+    const depth = n => { let d = 0; while (n) { d++; n = n.parentElement; } return d; };
+    const groups = [];
+    for (const members of families.values()) {
+      if (members.length < 3) continue;
+      const cards = members.filter(isCard);
+      const outer = cards.filter(c => !cards.some(o => o !== c && o.contains(c)));
+      if (outer.length >= 3) groups.push({ outer, depth: depth(outer[0]) });
+    }
+    // The most repeated family claims its cards first (outermost on a tie), so
+    // a card's inner body, or a wrapper around a lone card, never counts.
+    groups.sort((a, b) => (b.outer.length - a.outer.length) || (a.depth - b.depth));
+    const claimed = new Set();
+    const overlaps = c => { for (let n = c; n; n = n.parentElement) if (claimed.has(n)) return true; for (const o of claimed) if (c.contains(o)) return true; return false; };
+    for (const { outer } of groups) {
+      const mine = outer.filter(c => !overlaps(c));
+      mine.forEach(c => claimed.add(c));
+      // Climb single-child wrappers (<li><article>) so each card sits next to
+      // its siblings, but not past a lone card into its section (whose other
+      // children, like the heading, hold no cards).
+      const holdsCard = s => mine.some(c => s.contains(c));
+      const climb = u => {
+        const p = u.parentElement, gp = p && p.parentElement;
+        return p !== document.body && p.children.length === 1 && gp && gp !== document.body
+          && Array.from(gp.children).every(s => s === p || holdsCard(s));
+      };
+      const byParent = new Map();
+      for (let unit of mine) {
+        while (climb(unit)) unit = unit.parentElement;
+        const p = unit.parentElement;
+        if (!p || p === document.body) continue;
+        if (!byParent.has(p)) byParent.set(p, []);
+        byParent.get(p).push(unit);
+      }
+      for (const [parent, units] of byParent) {
+        if (containers.has(parent) || units.some(u => RS_BLOCK_TAG.test(u.tagName))) continue;
+        // A lone headline link (a "most read" list item) isn't a placement; a
+        // lone card with an image or a few lines of text is.
+        if (units.length === 1 && !units[0].querySelector('img') && cardTextBlocks(units[0]).length < 3) continue;
+        const r0 = units[0].getBoundingClientRect();
+        if (r0.height > Math.max(vh, 900)) continue;
+        containers.add(parent);
+        rows.push({
+          container: parent,
+          cardEls: units,
+          cardTag: units[0].tagName,
+          count: units.length,
+          visible: !!(parent.offsetWidth || parent.offsetHeight),
+          score: units.length * 1000 + Math.min(r0.width * r0.height, 200000) / 1000
+        });
+      }
+    }
+
+    // Image cards without a shared class: a real "card" holds exactly ONE image (not a nested group of cards) and a
     // bit of text. Walk up from each img to the nearest such ancestor.
     const cardish = Array.from(document.querySelectorAll('img')).map(img => {
       let n = img;
@@ -373,20 +545,21 @@
     for (const card of cardish) {
       const parent = card.parentElement;
       if (!parent || containers.has(parent)) continue;
-      if (parent.closest('#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-row-picker, [data-pp-copy]')) continue;
+      if (parent.closest(RS_SKIP)) continue;
+      // Already part of a family row (a card wrapper of one).
+      if (rows.some(r => r.container.contains(parent) || parent.contains(r.container))) continue;
       // Siblings that structurally match: same tag, each has exactly one <img>.
       const sibs = Array.from(parent.children).filter(c =>
         c.tagName === card.tagName && c.querySelectorAll('img').length === 1);
       if (sibs.length < 2) continue;
       // Reject if the "cards" are section-sized (a wrapper of carousels, page
       // sections that each happen to hold one banner image, etc.).
-      if (/^(SECTION|MAIN|HEADER|FOOTER|NAV|ASIDE|BODY)$/.test(card.tagName)) continue;
+      if (RS_BLOCK_TAG.test(card.tagName)) continue;
       const r0 = sibs[0].getBoundingClientRect();
-      if (r0.height > vh * 0.7) continue;
+      // Tall portrait cards are fine; only page-sized blocks are rejected
+      // (sections are already excluded by tag and width).
+      if (r0.height > Math.max(vh, 900)) continue;
       if (r0.width > (window.innerWidth || 1200) * 0.7) continue;
-      // A card needs words: a heading, or a link with text (not image-only tiles).
-      const hasWords = c => Array.from(c.querySelectorAll('h1,h2,h3,h4,h5,h6,a[href],[class*="title"],[class*="headline"]'))
-        .some(n => (n.textContent || '').trim().length > 1);
       if (!hasWords(sibs[0])) continue;
       containers.add(parent);
       // Score: favour MORE cards; mild bonus for reasonable card size. Avoid
@@ -410,16 +583,46 @@
     return rows.length ? rows[0] : null;
   }
 
-  // ---- Card-row templates: which parts of a card are image / title / text /
-  // button / link, as selectors relative to the card. Lets the engine fill a
-  // cloned card field by field, and the editor show one input per field.
-  const RS_FIELDS = [['image', 'Image'], ['title', 'Title'], ['text', 'Text'], ['cta', 'Button'], ['href', 'Link']];
+  // A row's template comes from its richest card (an image teaser beside
+  // text-only ones), so every field the row can show gets an input.
+  function rowTemplate(row) {
+    const rich = c => (c.querySelector('img') ? 100 : 0) + cardTextBlocks(c).length;
+    const best = row.cardEls.reduce((a, c) => (rich(c) > rich(a) ? c : a), row.cardEls[0]);
+    return analyzeCard(best);
+  }
+
+  // ---- Card-row templates: every repeating part of a card (image, label,
+  // title, text, meta such as "5 min read", button, link, extra text) as a
+  // selector relative to the card. Lets the engine fill a cloned card field by
+  // field, and the editor show one input per field.
+  const RS_FIELDS = [['image', 'Image'], ['kicker', 'Label'], ['title', 'Title'], ['text', 'Text'], ['meta', 'Meta'], ['cta', 'Button'], ['href', 'Link']];
+  const RS_EXTRA_MAX = 3;
   const RS_STATE_CLASS = /^(is-|has-)|^(active|selected|current|open|show|visible|hidden|swiper-slide-)/;
 
+  // [key, label] pairs a template has, in display order (extras last).
+  function templateFields(template) {
+    if (!template) return [];
+    const out = RS_FIELDS.filter(([k]) => template[k]);
+    for (let i = 1; i <= RS_EXTRA_MAX; i++) if (template['extra' + i]) out.push(['extra' + i, 'Text ' + (i + 1)]);
+    return out;
+  }
+  // Fields that hold text (everything but the image and the link URL).
+  function templateTextKeys(template) {
+    return templateFields(template).map(([k]) => k).filter(k => k !== 'image' && k !== 'href');
+  }
+
   // Selector for `node` relative to `card` (":scope" = the card itself).
+  // Prefers a class or tag that's unique in the card, so the same template also
+  // fits sibling cards laid out differently (a text-only teaser next to one
+  // with an image); falls back to the child-index path.
   function relSelector(card, node) {
     if (!node) return '';
     if (node === card) return ':scope';
+    const tag = node.tagName.toLowerCase();
+    const cls = (node.getAttribute('class') || '').split(/\s+/).filter(c => c && !RS_STATE_CLASS.test(c) && !/^(pp-|personalise)/.test(c));
+    for (const sel of cls.map(c => ':scope .' + CSS.escape(c)).concat(/^(img|picture|time|h[1-6])$/.test(tag) ? [':scope ' + tag] : [])) {
+      try { const m = card.querySelectorAll(sel); if (m.length === 1 && m[0] === node) return sel; } catch (e) { /* keep trying */ }
+    }
     const parts = [];
     let n = node;
     while (n && n !== card) {
@@ -438,26 +641,66 @@
 
   function cardText(n) { return n ? (n.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
 
+  // Each separate piece of text in a card, in document order: an element with
+  // its own text, lifted to the largest ancestor that still holds just that
+  // text (so <h3><a>Headline</a></h3> gives the h3).
+  const RS_HIDDEN_CLASS = /sr-only|visually-?hidden|screen-?reader|a11y/i;
+  function cardTextBlocks(card) {
+    const blocks = [];
+    for (const el of card.querySelectorAll('*')) {
+      if (el.closest('svg, script, style, noscript, template')) continue;
+      if (RS_HIDDEN_CLASS.test(el.getAttribute('class') || '')) continue;
+      const own = Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim());
+      if (!own) continue;
+      const t = cardText(el);
+      if (t.length < 2) continue;
+      let b = el;
+      while (b.parentElement && b.parentElement !== card && cardText(b.parentElement) === t && !b.parentElement.querySelector('img')) b = b.parentElement;
+      if (blocks.some(o => o === b || o.contains(b) || b.contains(o))) continue;
+      blocks.push(b);
+    }
+    return blocks;
+  }
+
+  const RS_META_TEXT = /\b\d+\s*(?:min|mins|minutes?|hrs?|hours?)\b|\bread\b|\bago\b|\b(?:19|20)\d{2}\b|^by\s/i;
+  const RS_META_CLASS = /meta|byline|date|time|duration|read-?time|timestamp/i;
+  const RS_KICKER_CLASS = /kicker|eyebrow|fly-?title|overline|category|label|tag|section/i;
+
   // Work out a card's fields from its first card.
   function analyzeCard(card) {
     const img = card.querySelector('img');
-    const isText = n => n && !n.querySelector('img') && cardText(n);
-    let title = Array.from(card.querySelectorAll('h1,h2,h3,h4,h5,h6')).find(isText)
-      || Array.from(card.querySelectorAll('[class*="title"],[class*="name"],[class*="heading"]')).find(n => isText(n) && !n.querySelector('h1,h2,h3,h4,h5,h6,p'));
+    const blocks = cardTextBlocks(card);
+    const cls = n => (n.getAttribute('class') || '') + ' ' + Array.from(n.querySelectorAll('*')).map(c => c.getAttribute('class') || '').join(' ');
+    const words = n => cardText(n).split(/\s+/).length;
+    const taken = new Set();
+    const take = n => { if (n) taken.add(n); return n || null; };
+    const free = () => blocks.filter(b => !taken.has(b));
+
+    const title = take(blocks.find(b => b.matches('h1,h2,h3,h4,h5,h6') || b.querySelector('h1,h2,h3,h4,h5,h6'))
+      || blocks.find(b => /title|headline|heading|name/i.test(cls(b))));
+    const ctaHost = n => n.matches('a, button') ? n : n.closest('a, button');
+    const cta = take(free().find(b => {
+      const h = ctaHost(b);
+      return h && card.contains(h) && !(title && (h.contains(title) || title.contains(h))) && words(b) <= 5 && !RS_META_TEXT.test(cardText(b));
+    }));
+    const meta = take(free().find(b => b.matches('time') || b.querySelector('time')
+      || (words(b) <= 6 && (RS_META_TEXT.test(cardText(b)) || RS_META_CLASS.test(cls(b))))));
+    const beforeTitle = b => title && (b.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const kicker = take(free().find(b => (beforeTitle(b) && words(b) <= 12) || RS_KICKER_CLASS.test(cls(b)) && words(b) <= 6));
+    const rest = free();
+    const text = take(rest.find(b => !beforeTitle(b)) || rest[0]);
+    const extras = free().slice(0, RS_EXTRA_MAX);
+
     const links = (card.tagName === 'A' ? [card] : []).concat(Array.from(card.querySelectorAll('a[href]')));
-    const link = links[0] || null;
-    // A button-like element with its own label (not the title, not wrapping it).
-    const cta = Array.from(card.querySelectorAll('a, button')).find(n =>
-      isText(n) && n !== title && !(title && n.contains(title)) && !(title && title.contains(n))) || null;
-    const text = Array.from(card.querySelectorAll('p, [class*="desc"], [class*="text"], [class*="subtitle"], [class*="summary"]')).find(n =>
-      isText(n) && n !== title && n !== cta && !(title && (title.contains(n) || n.contains(title))) && !(cta && (cta.contains(n) || n.contains(cta)))
-      && !n.querySelector('h1,h2,h3,h4,h5,h6')) || null;
     const template = {};
     if (img) template.image = relSelector(card, img);
+    if (kicker) template.kicker = relSelector(card, kicker);
     if (title) template.title = relSelector(card, title);
     if (text) template.text = relSelector(card, text);
+    if (meta) template.meta = relSelector(card, meta);
     if (cta) template.cta = relSelector(card, cta);
-    if (link) template.href = relSelector(card, link);
+    if (links[0]) template.href = relSelector(card, links[0]);
+    extras.forEach((n, i) => { template['extra' + (i + 1)] = relSelector(card, n); });
     for (const k of Object.keys(template)) if (!template[k]) delete template[k];
     return template;
   }
@@ -468,21 +711,27 @@
     const out = {};
     const img = q(template.image);
     if (img) out.image = img.currentSrc || img.src || '';
-    if (template.title) out.title = cardText(q(template.title));
-    if (template.text) out.text = cardText(q(template.text));
-    if (template.cta) out.cta = cardText(q(template.cta));
+    for (const k of templateTextKeys(template)) out[k] = cardText(q(template[k]));
     const a = q(template.href);
     if (a) out.href = a.getAttribute('href') || '';
     return out;
   }
 
+  // Set a field's text without wiping elements inside it: descend through
+  // single wrappers (<h3><a>Headline</a></h3> sets the <a>, keeping the link).
+  function setFieldText(node, value) {
+    let t = node;
+    while (t.children.length === 1 && cardText(t.children[0]) === cardText(t)) t = t.children[0];
+    t.textContent = value;
+  }
+
   // Map an older {image, lines[]} card onto a template's fields (lines fill
-  // title, text, button in order).
+  // the text fields in order).
   function cardToTemplate(card, template) {
-    if (['title', 'text', 'cta', 'href'].some(k => card[k] !== undefined)) return card;
+    if (Object.keys(card).some(k => k !== 'image' && k !== 'lines')) return card;
     const lines = Array.isArray(card.lines) ? card.lines.slice() : [];
     const out = { image: card.image || '' };
-    for (const k of ['title', 'text', 'cta']) if (template[k]) out[k] = lines.shift() || '';
+    for (const k of templateTextKeys(template)) out[k] = lines.shift() || '';
     if (template.href) out.href = '';
     return out;
   }
@@ -531,7 +780,17 @@
     }
     const tab = panel ? (panel.getAttribute('data-panel') || panel.getAttribute('aria-label') || '') : '';
     const visible = !!(c.offsetWidth || c.offsetHeight);
-    return { label: label || 'Card row', tab: tab ? tab.charAt(0).toUpperCase() + tab.slice(1) : '', visible };
+    // No section heading: name the row by its first headline instead. That
+    // changes with the content, so it's flagged and never saved as targetLabel.
+    let generic = false;
+    if (!label) {
+      generic = true;
+      const first = row.cardEls && row.cardEls[0];
+      const h = first && (first.querySelector('h1,h2,h3,h4,h5,h6') || first.querySelector('a[href]'));
+      const t = cardText(h);
+      label = t ? 'Row starting “' + (t.length > 38 ? t.slice(0, 36).trim() + '…' : t) + '”' : 'Card row';
+    }
+    return { label, generic, tab: tab ? tab.charAt(0).toUpperCase() + tab.slice(1) : '', visible };
   }
 
   // Resolve a slot name to the concrete element to act on. `want` is 'text' or
@@ -565,17 +824,21 @@
   // REAL markup with real classes/attrs/text so it can write accurate selectors.
   function captureLiveHtml() {
     var clone = document.body.cloneNode(true);
+    // Find hidden elements first, while live and clone still line up index for
+    // index (removing anything below would shift them).
+    var allLive = document.body.querySelectorAll('*');
+    var allClone = clone.querySelectorAll('*');
+    var hidden = [];
+    for (var m = 0; m < allLive.length && m < allClone.length; m++) {
+      try { var cs = getComputedStyle(allLive[m]); if (cs.display === 'none' || cs.visibility === 'hidden') hidden.push(allClone[m]); } catch (e) {}
+    }
+    for (var h = 0; h < hidden.length; h++) hidden[h].remove();
     var ours = clone.querySelectorAll('#pp-panel, #pp-ai-modal, #pp-image-gallery, #pp-row-picker, #pp-pick-overlay, #pp-pick-hint, #pp-preapply, [id^="personalise-"]');
     for (var i = 0; i < ours.length; i++) ours[i].remove();
     var noise = clone.querySelectorAll('script, style, noscript, iframe, link[rel="stylesheet"]');
     for (var j = 0; j < noise.length; j++) noise[j].remove();
     var svgs = clone.querySelectorAll('svg');
     for (var k = 0; k < svgs.length; k++) { svgs[k].textContent = ''; svgs[k].setAttribute('data-stripped', 'svg-contents'); }
-    var allLive = document.body.querySelectorAll('*');
-    var allClone = clone.querySelectorAll('*');
-    for (var m = 0; m < allLive.length && m < allClone.length; m++) {
-      try { var cs = getComputedStyle(allLive[m]); if (cs.display === 'none' || cs.visibility === 'hidden') allClone[m].remove(); } catch (e) {}
-    }
     var styled = clone.querySelectorAll('[style]');
     for (var n = 0; n < styled.length; n++) styled[n].removeAttribute('style');
     return clone.innerHTML;
@@ -820,7 +1083,7 @@
   // textContent only (no HTML injection). Maps lines onto the card's text
   // elements in document order.
   function fillCard(cardEl, spec, template) {
-    const structured = template && ['title', 'text', 'cta', 'href'].some(k => spec[k] !== undefined);
+    const structured = template && Object.keys(spec).some(k => k !== 'image' && k !== 'lines');
     if (structured) {
       const q = sel => { try { return sel ? cardEl.querySelector(sel) : null; } catch (e) { return null; } };
       const img = q(template.image) || cardEl.querySelector('img');
@@ -829,11 +1092,11 @@
         const pic = img.closest('picture'); if (pic) pic.querySelectorAll('source').forEach(s => s.remove());
       }
       if (img && spec.title) img.alt = spec.title;
-      for (const k of ['title', 'text', 'cta']) {
-        const n = q(template[k]);
-        if (n && typeof spec[k] === 'string') n.textContent = spec[k];
-      }
+      // Resolve every node before writing, so one field's text can't move
+      // another field's element (e.g. the link inside the headline).
       const a = q(template.href);
+      const nodes = templateTextKeys(template).map(k => [k, q(template[k])]);
+      for (const [k, n] of nodes) if (n && typeof spec[k] === 'string') setFieldText(n, spec[k]);
       if (a && spec.href) a.setAttribute('href', spec.href);
       return;
     }
@@ -1296,6 +1559,8 @@
     #pp-panel .pp-rs-cardedit input { background-color: #fff; }
     #pp-panel .pp-rs-cardhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     #pp-panel .pp-rs-thumb { flex: 0 0 34px; height: 34px; border-radius: 8px; background: #e5e5ea center / cover no-repeat; }
+    #pp-panel .pp-swap-with { display: flex; align-items: center; gap: 8px; }
+    #pp-panel .pp-swap-with .pp-rs-thumb { flex-basis: 56px; height: 42px; }
     #pp-panel .pp-rs-cardnum { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #pp-panel .pp-place { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 9px; background: var(--pp-accent-soft); color: var(--pp-accent);
       font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
@@ -1364,16 +1629,20 @@
     #pp-image-gallery .pp-ig-head h3 { margin: 0; font: 600 18px/1.3 Georgia, "Merriweather", serif; }
     #pp-image-gallery .pp-ig-close { background: transparent; border: 0; font-size: 26px; cursor: pointer; color: #888; line-height: 1; }
     #pp-image-gallery .pp-ig-close:hover { color: #222; }
+    #pp-image-gallery .pp-ig-filter { flex: 0 0 auto; margin: 12px 20px 0; padding: 8px 12px; border: 1px solid #d1d1d6; border-radius: 10px; font: 13px var(--pp-font, system-ui); }
     #pp-image-gallery .pp-ig-empty { padding: 40px 20px; text-align: center; color: #888; }
-    #pp-image-gallery .pp-ig-grid { padding: 16px 20px; overflow-y: auto;
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    #pp-image-gallery .pp-ig-grid { padding: 16px 20px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;
+      /* Cells clip (overflow: hidden), so without max-content rows the grid
+         squashes them to fit the box instead of scrolling. */
+      grid-auto-rows: max-content; align-content: start; overscroll-behavior: contain; }
     #pp-image-gallery .pp-ig-cell { position: relative; padding: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;
-      cursor: pointer; background: #fafafa; text-align: left; }
+      cursor: pointer; background: #fafafa; text-align: left; display: block; margin: 0; width: auto; height: auto; min-height: 0; }
     #pp-image-gallery .pp-ig-vbadge { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px;
       border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff; font-size: 10px; line-height: 22px;
       text-align: center; pointer-events: none; }
     #pp-image-gallery .pp-ig-cell:hover { border-color: #ff6b3d; box-shadow: 0 4px 14px rgba(255,107,61,0.25); }
-    #pp-image-gallery .pp-ig-thumb { width: 100%; height: 92px; background-size: cover; background-position: center;
+    #pp-image-gallery .pp-ig-thumb { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; background-size: cover; background-position: center;
       background-repeat: no-repeat; background-color: #eee; }
     #pp-image-gallery .pp-ig-meta { padding: 6px 8px; font-size: 11px; color: #555;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1400,6 +1669,7 @@
     #pp-row-picker .pp-rp-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
     #pp-row-picker .pp-rp-card { min-width: 0; }
     #pp-row-picker .pp-rp-card__img { aspect-ratio: 4 / 3; border-radius: 8px; background: #e5e5ea center / cover no-repeat; }
+    #pp-row-picker .pp-rp-card__img--text { display: flex; align-items: center; justify-content: center; background: #f2f2f7; color: #8e8e93; font-size: 11px; }
     #pp-row-picker .pp-rp-card__cap { margin-top: 4px; font-size: 11px; color: #3c3c43; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #pp-row-picker .pp-rp-foot { padding: 8px 20px 16px; text-align: center; }
     #pp-row-picker .pp-rp-link { border: 0; background: transparent; color: #007aff; font: 500 13px/1.4 var(--pp-font); cursor: pointer; padding: 6px; }
@@ -1505,10 +1775,24 @@
   // Shows every image on the page as a grid of thumbnails (hero first). The SE
   // clicks one; we hand back its unique selector — same contract as startPick,
   // so everything downstream (pre-apply, SPA re-fire) is unchanged.
-  function startImageGallery(onPicked) {
+  // With { source: true } it picks an image to USE instead: this page's images
+  // plus the site library (images seen on other pages), and hands back the
+  // URL as onPicked(sel, el, src) (sel/el empty for library images).
+  function startImageGallery(onPicked, opts) {
     const existing = document.getElementById('pp-image-gallery');
     if (existing) existing.remove();
-    const images = collectPageImages();
+    const source = !!(opts && opts.source);
+    // Replacing: only what's on this page now. Choosing a source: this page
+    // plus everything collected on the site.
+    let images = collectPageImages({ renderedOnly: !source });
+    if (source) {
+      harvestPageImages();
+      images = images.filter(i => i.kind !== 'video');
+      const here = new Set(images.map(i => imageKey(i.src)));
+      const lib = imageLibrary().filter(e => !here.has(e.k)).sort((a, b) => b.t - a.t)
+        .map(e => ({ el: null, kind: 'lib', src: e.src, w: e.w, h: e.h, alt: e.alt, page: e.page, title: e.title }));
+      images = images.concat(lib);
+    }
 
     const wrap = document.createElement('div'); wrap.id = 'pp-image-gallery';
     const backdrop = document.createElement('div'); backdrop.className = 'pp-ig-backdrop';
@@ -1516,7 +1800,8 @@
     const close = () => wrap.remove();
 
     const head = document.createElement('div'); head.className = 'pp-ig-head';
-    const h = document.createElement('h3'); h.textContent = 'Pick the image to replace';
+    const h = document.createElement('h3');
+    h.textContent = source ? ((opts && opts.title) || 'Choose an image') + ' · ' + images.length + ' from this site' : 'Pick the image to replace · this page';
     const closeBtn = document.createElement('button'); closeBtn.className = 'pp-ig-close';
     closeBtn.textContent = '×'; closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.addEventListener('click', close);
@@ -1529,25 +1814,43 @@
       box.appendChild(empty);
     } else {
       const grid = document.createElement('div'); grid.className = 'pp-ig-grid';
+      if (source) {
+        // Filter by alt text / page, for big libraries.
+        const filter = document.createElement('input'); filter.type = 'search'; filter.className = 'pp-ig-filter';
+        filter.placeholder = 'Filter by description or page…';
+        filter.addEventListener('input', () => {
+          const q = filter.value.trim().toLowerCase();
+          grid.querySelectorAll('.pp-ig-cell').forEach(c => { c.style.display = !q || c.dataset.find.includes(q) ? '' : 'none'; });
+        });
+        box.appendChild(filter);
+      }
       images.forEach((im, i) => {
         const cell = document.createElement('button'); cell.className = 'pp-ig-cell'; cell.type = 'button';
         const thumb = document.createElement('div'); thumb.className = 'pp-ig-thumb';
         thumb.style.backgroundImage = `url('${im.src.replace(/'/g, "\\'")}')`;
         const meta = document.createElement('div'); meta.className = 'pp-ig-meta';
-        const kindTag = im.kind === 'bg' ? ' · bg' : (im.kind === 'video' ? ' · video' : '');
-        meta.textContent = `${im.w}×${im.h}${kindTag}` + (i === 0 ? ' · largest' : '');
+        const alt = im.alt || (im.el && im.el.getAttribute && im.el.getAttribute('alt')) || '';
+        if (source) meta.textContent = alt || (im.kind === 'lib' ? (im.page || '') : 'This page');
+        else {
+          const kindTag = im.kind === 'bg' ? ' · bg' : (im.kind === 'video' ? ' · video' : '');
+          meta.textContent = `${im.w}×${im.h}${kindTag}` + (i === 0 ? ' · largest' : '');
+        }
+        cell.dataset.find = (alt + ' ' + (im.page || '') + ' ' + (im.title || '')).toLowerCase();
         cell.appendChild(thumb); cell.appendChild(meta);
-        cell.title = im.kind === 'video' ? (im.src + '  — video; replace it with a video (.mp4)') : im.src;
+        cell.title = im.kind === 'video' ? (im.src + '  — video; replace it with a video (.mp4)')
+          : im.kind === 'lib' ? ((alt ? alt + '\n' : '') + 'Seen on ' + (im.page || '?')) : im.src;
         if (im.kind === 'video') { const badge = document.createElement('span'); badge.className = 'pp-ig-vbadge'; badge.textContent = '▶'; cell.appendChild(badge); }
         // Hover highlights the real element on the page so the SE can confirm.
-        cell.addEventListener('mouseenter', () => flashElement(im.el, true));
-        cell.addEventListener('mouseleave', () => flashElement(im.el, false));
+        if (im.el) {
+          cell.addEventListener('mouseenter', () => flashElement(im.el, true));
+          cell.addEventListener('mouseleave', () => flashElement(im.el, false));
+        }
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
-          const sel = uniqueSelector(im.el);
-          flashElement(im.el, false);
+          const sel = im.el ? uniqueSelector(im.el) : '';
+          if (im.el) flashElement(im.el, false);
           close();
-          onPicked(sel, im.el);
+          onPicked(sel, im.el, im.kind === 'img' && im.el ? (im.el.currentSrc || im.el.src || im.src) : im.src);
         });
         grid.appendChild(cell);
       });
@@ -1562,13 +1865,16 @@
   }
 
   // -------------------- Recommendation placement picker --------------------
-  // Lists up to 5 card rows on the page with a preview of their current cards
-  // and detected fields. onPicked(row, template, items) on choice; "click on the
-  // page instead" falls back to startPick and maps the click to its row.
+  // Lists the page's card rows (visible ones first, in page order) with a
+  // preview of their current cards and detected fields. onPicked(row, template,
+  // items) on choice; "click on the page instead" falls back to startPick and
+  // maps the click to its row.
   function startRowPicker(onPicked) {
     const existing = document.getElementById('pp-row-picker');
     if (existing) existing.remove();
-    const rows = detectCardRows().slice(0, 5);
+    const rows = detectCardRows()
+      .sort((a, b) => (b.visible - a.visible) || (a.container.compareDocumentPosition(b.container) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
+      .slice(0, 30);
 
     const wrap = document.createElement('div'); wrap.id = 'pp-row-picker';
     const backdrop = document.createElement('div'); backdrop.className = 'pp-rp-backdrop';
@@ -1591,7 +1897,7 @@
       list.appendChild(empty);
     }
     rows.forEach(row => {
-      const template = analyzeCard(row.cardEls[0]);
+      const template = rowTemplate(row);
       const items = row.cardEls.map(c => readCard(c, template));
       const info = describeRow(row);
       const opt = document.createElement('button'); opt.type = 'button'; opt.className = 'pp-rp-opt';
@@ -1599,7 +1905,7 @@
       const name = document.createElement('div'); name.className = 'pp-rp-opt__name';
       name.textContent = info.label + (info.tab ? ' · ' + info.tab : '');
       const meta = document.createElement('div'); meta.className = 'pp-rp-opt__meta';
-      meta.textContent = row.count + ' cards · ' + RS_FIELDS.filter(([k]) => template[k]).map(([, l]) => l.toLowerCase()).join(', ')
+      meta.textContent = row.count + (row.count === 1 ? ' card · ' : ' cards · ') + templateFields(template).map(([, l]) => l.toLowerCase()).join(', ')
         + (info.visible ? '' : ' · hidden tab');
       top.appendChild(name); top.appendChild(meta);
       const strip = document.createElement('div'); strip.className = 'pp-rp-strip';
@@ -1607,6 +1913,7 @@
         const c = document.createElement('div'); c.className = 'pp-rp-card';
         const t = document.createElement('div'); t.className = 'pp-rp-card__img';
         if (it.image) t.style.backgroundImage = `url('${it.image.replace(/'/g, "\\'")}')`;
+        else { t.classList.add('pp-rp-card__img--text'); t.textContent = 'Text only'; }
         const cap = document.createElement('div'); cap.className = 'pp-rp-card__cap';
         cap.textContent = it.title || it.cta || '';
         c.appendChild(t); c.appendChild(cap); strip.appendChild(c);
@@ -1627,7 +1934,7 @@
       startPick((sel, elc) => {
         const row = detectCardRows().find(r => r.container.contains(elc));
         if (!row) { alert('That isn’t inside a row of cards — try clicking one of the cards.'); return; }
-        const template = analyzeCard(row.cardEls[0]);
+        const template = rowTemplate(row);
         onPicked(row, template, row.cardEls.map(c => readCard(c, template)));
       });
     });
@@ -2338,10 +2645,25 @@
         wrap.appendChild(vidField);
         wrap.appendChild(el('div', { className: 'pp-hint', text: 'Video target \u2014 use an .mp4 (plays muted).' }));
       } else {
+        // Replace with: pick from every image collected on this site, or paste a URL.
+        const withField = el('div', { className: 'pp-thr-field' });
+        withField.appendChild(el('label', { text: 'Replace with' }));
+        const withRow = el('div', { className: 'pp-swap-with' });
+        const withThumb = el('div', { className: 'pp-rs-thumb' });
+        if (rule.action.image) withThumb.style.backgroundImage = `url('${String(rule.action.image).replace(/'/g, "\\'")}')`;
+        const libBtn = el('button', { className: 'pp-btn pp-btn--sm', text: rule.action.image ? 'Change…' : 'Choose image…' });
+        libBtn.title = 'Pick from the ' + imageLibrary().length + ' images collected on this site';
+        libBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startImageGallery((sel, elc, src) => { if (src) { rule.action.image = src; saveConfig(); renderPanel(); } }, { source: true, title: 'Replace with' });
+        });
+        withRow.appendChild(withThumb); withRow.appendChild(libBtn);
+        withField.appendChild(withRow);
+        wrap.appendChild(withField);
         const imgField = el('div', { className: 'pp-thr-field' });
         imgField.appendChild(el('label', { text: 'Image URL' }));
-        const imgInput = el('input', { type: 'text', value: rule.action.image || '', placeholder: 'https://\u2026' });
-        imgInput.addEventListener('change', () => { rule.action.image = imgInput.value; saveConfig(); });
+        const imgInput = el('input', { type: 'text', value: rule.action.image || '', placeholder: 'or paste https://\u2026' });
+        imgInput.addEventListener('change', () => { rule.action.image = imgInput.value.trim(); saveConfig(); renderPanel(); });
         imgField.appendChild(imgInput);
         wrap.appendChild(imgField);
       }
@@ -2472,8 +2794,8 @@
         ev.stopPropagation();
         startRowPicker((row, template, items) => {
           rule.action.target = stableRowSelector(row.container);
-          const picked = describeRow(row).label;
-          if (picked && picked !== 'Card row') rule.action.targetLabel = picked; else delete rule.action.targetLabel;
+          const picked = describeRow(row);
+          if (!picked.generic) rule.action.targetLabel = picked.label; else delete rule.action.targetLabel;
           rule.action.template = template;
           rule.action.mode = 'replace';
           const hasCards = rule.action.cards.some(c => c.image || c.title || (c.lines && c.lines.length));
@@ -2529,7 +2851,7 @@
 
       // Cards: one input per detected field (template), else free-form lines.
       const tpl = rule.action.template;
-      const fields = tpl ? RS_FIELDS.filter(([k]) => tpl[k]) : null;
+      const fields = tpl ? templateFields(tpl) : null;
       wrap.appendChild(el('div', { className: 'pp-rule-meta', text: 'Cards (' + rule.action.cards.length + ')' }));
       rule.action.cards.forEach((card, idx) => {
         const cardBox = el('div', { className: 'pp-rs-cardedit' });
@@ -2551,11 +2873,10 @@
         const browse = el('button', { className: 'pp-btn pp-btn--sm', text: 'Browse' });
         browse.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          startImageGallery((sel, elc) => {
-            const im = elc && (elc.tagName === 'IMG' ? elc : elc.querySelector && elc.querySelector('img'));
-            card.image = (im && (im.currentSrc || im.src)) || card.image;
+          startImageGallery((sel, elc, src) => {
+            card.image = src || card.image;
             saveConfig(); renderPanel();
-          });
+          }, { source: true });
         });
         imgRow.appendChild(imgIn); imgRow.appendChild(browse);
         cardBox.appendChild(imgRow);
@@ -2960,6 +3281,31 @@
       togglePersonaLibrary(libBtn, urlInput);
     });
 
+    // Site image library: images collected while browsing this site.
+    body = section(root, 'Image library', imageLibrary().length);
+    const collectLabel = el('label', { className: 'pp-check' });
+    const collectInput = document.createElement('input');
+    collectInput.type = 'checkbox'; collectInput.checked = ui.collectImages !== false;
+    collectInput.addEventListener('change', () => {
+      ui.collectImages = collectInput.checked; saveUi();
+      if (collectInput.checked) harvestPageImages();
+      renderPanel();
+    });
+    collectLabel.appendChild(collectInput);
+    collectLabel.appendChild(document.createTextNode('Collect images as I browse'));
+    collectLabel.title = 'Saves this site\u2019s photos (not icons) in this browser, for image pickers and AI drafts';
+    body.appendChild(collectLabel);
+    const libRow = el('div', { className: 'pp-row' });
+    const viewLib = el('button', { className: 'pp-btn pp-btn--sm', text: 'View' });
+    viewLib.addEventListener('click', (e) => { e.stopPropagation(); startImageGallery(() => {}, { source: true }); });
+    const clearLib = el('button', { className: 'pp-btn pp-btn--sm', text: 'Clear' });
+    clearLib.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm('Forget all ' + imageLibrary().length + ' images collected on this site?')) { clearImageLibrary(); renderPanel(); }
+    });
+    libRow.appendChild(viewLib); libRow.appendChild(clearLib);
+    body.appendChild(libRow);
+
     // Import / Export \u2014 real file operations
     body = section(root, 'Save / load story');
     const ioRow = el('div', { className: 'pp-actions-row' });
@@ -3338,10 +3684,42 @@ Config -> Save/load story -> Import.`;
   // Ask the gateway to DESIGN a single popup as self-contained HTML + CSS,
   // brand-matched to the current site (the LLM infers the look). Returns
   // { html, css }. Fence/prose tolerant.
+  // The page's look as computed styles (the captured HTML has its styles
+  // stripped): fonts, colours, button and link styling, the logo.
+  function captureBrandStyles() {
+    const out = {};
+    const pick = (name, node, props) => {
+      if (!node || node.closest('#pp-panel, #pp-ai-modal, [data-pp-copy], [id^="personalise-"]')) return;
+      const cs = getComputedStyle(node);
+      out[name] = Object.fromEntries(props.map(p => [p, cs.getPropertyValue(p)]).filter(([, v]) => v && v !== 'none' && v !== 'normal'));
+    };
+    const visible = sel => Array.from(document.querySelectorAll(sel)).find(n => n.offsetWidth && n.offsetHeight && !n.closest('#pp-panel'));
+    pick('body', document.body, ['font-family', 'font-size', 'color', 'background-color']);
+    pick('h1', visible('h1'), ['font-family', 'font-weight', 'font-size', 'color', 'letter-spacing', 'text-transform']);
+    pick('h2', visible('h2'), ['font-family', 'font-weight', 'font-size', 'color']);
+    pick('link', visible('main a[href], a[href]'), ['color', 'text-decoration-line']);
+    // The brand's call-to-action: the first visible button-like element with a
+    // filled background (tabs and icon buttons are transparent).
+    const filled = n => { const bg = getComputedStyle(n).backgroundColor; return bg && !/^(transparent|rgba\(.*,\s*0\))$/.test(bg); };
+    const ctas = Array.from(document.querySelectorAll('button, .btn, [class*="button"], a[class*="btn"], a[class*="cta"], input[type="submit"]'))
+      .filter(n => n.offsetWidth && n.offsetHeight && !n.closest('#pp-panel, #pp-ai-modal'));
+    pick('button', ctas.find(filled) || ctas[0],
+      ['font-family', 'font-weight', 'font-size', 'color', 'background-color', 'border', 'border-radius', 'padding', 'text-transform']);
+    pick('input', visible('input[type="text"], input[type="email"], input[type="search"]'), ['font-family', 'border', 'border-radius', 'padding', 'background-color']);
+    const logo = visible('header img[alt*="logo" i], img[class*="logo" i], [class*="logo" i] img, header img');
+    if (logo) out.logo = { src: logo.currentSrc || logo.src, alt: logo.getAttribute('alt') || '' };
+    return out;
+  }
+
   async function gatewayDesignPopup(intent) {
     const host = window.location.hostname || '(local)';
     const headings = Array.from(document.querySelectorAll('h1, h2'))
       .slice(0, 3).map(h => (h.textContent || '').trim()).filter(Boolean);
+    // The page itself, so the popup fits where it appears: what the page is
+    // about, its wording, offers and look.
+    let pageHtml = '', brand = null;
+    try { pageHtml = captureLiveHtml(); } catch (e) { /* no capture */ }
+    try { brand = captureBrandStyles(); } catch (e) { /* no styles */ }
     const system = 'You are a web designer. You output a single modal popup as self-contained '
       + 'HTML plus a CSS block, visually matched to the brand of the given website. '
       + 'Return ONLY a JSON object: {"html":"...","css":"..."}. Rules: no <script>, no '
@@ -3350,14 +3728,26 @@ Config -> Save/load story -> Import.`;
       + 'If a form is requested, include labelled inputs and a submit button (the host '
       + 'intercepts submit). CSS selectors should target classes you define inside the popup.';
     const prompt = 'Website: ' + host + '\n'
+      + 'Page URL: ' + location.href + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (headings.length ? 'Visible headings: ' + headings.join(' | ') + '\n' : '')
+      + (pageHtml
+        ? 'The LIVE rendered HTML of the page the popup appears on is in context.html. Read it first: '
+          + 'what the page is about, its products/destinations/articles, its tone of voice and its calls to '
+          + 'action. Make the popup fit THIS page (refer to what the visitor is looking at, link to real '
+          + 'pages from the HTML, reuse real image URLs from it).\n'
+        : '')
+      + (brand ? 'The page\'s computed styles are in context.brand (fonts, colours, buttons, inputs, logo). '
+          + 'Use those exact font families, colours and button styling so the popup looks native.\n' : '')
       + 'Design this popup: ' + (intent && intent.trim() ? intent.trim() : 'a tasteful promotional offer with a clear call to action')
       + '\n\nReturn only the JSON object.';
+    const ctx = { host: host, title: document.title, url: location.href };
+    if (brand) ctx.brand = brand;
+    if (pageHtml) ctx.html = pageHtml;
     const parsed = await aiAgent(
       system + '\n\n' + prompt + '\nVerify that any URLs you include actually resolve.',
       { html: 'string', css: 'string' },
-      { host: host, title: document.title }
+      ctx
     );
     if (!parsed || typeof parsed.html !== 'string' || !parsed.html.trim()) {
       throw new Error('Gateway response had no html field.');
@@ -3378,27 +3768,30 @@ Config -> Save/load story -> Import.`;
     // cards currently in it as examples of length and tone.
     const tpl = action && action.template;
     if (tpl && Object.keys(tpl).length) {
-      const keys = RS_FIELDS.map(([k]) => k).filter(k => tpl[k]);
+      const keys = templateFields(tpl).map(([k]) => k);
       const pick = c => Object.fromEntries(keys.map(k => [k, String(c[k] || '')]));
       const current = (action.cards || []).filter(c => c.title || c.image);
       const count = Math.max(1, Math.min(8, current.length || 4));
       const describe = {
-        image: '"image": a public, hotlink-safe photo URL that you VERIFY resolves (HTTP 200, image content-type) before using it; if you cannot verify one, use ""',
+        image: '"image": a photo URL. First choice: one from the website\'s own image list below, if one fits. Otherwise a public, hotlink-safe photo URL that you VERIFY resolves (HTTP 200, image content-type) before using it; if you cannot verify one, use ""',
+        kicker: '"kicker": the small label above the heading (section, category or teaser line)',
         title: '"title": the card heading (a short name)',
-        text: '"text": one short descriptive line',
+        text: '"text": the descriptive line(s) under the heading, about as long as the examples',
+        meta: '"meta": the small meta line (e.g. "5 min read", a date or byline), same format as the examples',
         cta: '"cta": the button label, 1-4 words',
         href: '"href": a real page on ' + host + ' for this item if you can find one, else "#"'
       };
       const system = 'You write content for a row of recommendation cards on a web page. '
         + 'Return ONLY a JSON object: {"cards":[{' + keys.map(k => '"' + k + '":"..."').join(',') + '}]}. Fields:\n'
-        + keys.map(k => '- ' + describe[k]).join('\n')
+        + keys.map(k => '- ' + (describe[k] || ('"' + k + '": another short text line in the same style as the examples'))).join('\n')
         + '\nMatch the length and tone of the example cards. No markup, no HTML.';
       const prompt = 'Website: ' + host + '\n'
         + (document.title ? 'Page title: ' + document.title + '\n' : '')
         + (current.length ? 'Example cards currently in this row (match their style):\n' + JSON.stringify(current.slice(0, 3).map(pick), null, 1) + '\n' : '')
         + 'Number of cards: ' + count + '\n'
-        + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page')
-        + '\n\nReturn only the JSON object.';
+        + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page') + '\n'
+        + (keys.includes('image') ? libraryForPrompt(intent) : '')
+        + '\nReturn only the JSON object.';
       const parsed = await aiAgent(system + '\n\n' + prompt,
         { cards: [Object.fromEntries(keys.map(k => [k, 'string']))] },
         { host: host, title: document.title, count: count, intent: intent || '' });
@@ -3420,15 +3813,16 @@ Config -> Save/load story -> Import.`;
       + 'Return ONLY a JSON object: {"cards":[{"image":"<image URL or empty string>",'
       + '"lines":["line1","line2",...]}]}. Each card has 2-3 SHORT text lines (e.g. name, '
       + 'title/subtitle, one-line blurb). Match the length and tone of the sample card text. '
-      + 'For "image", find a public, hotlink-safe image matching the card and VERIFY the URL '
+      + 'For "image", prefer one of the website\'s own images listed below when one fits; otherwise find a public, hotlink-safe image matching the card and VERIFY the URL '
       + 'actually resolves (HTTP 200, image content-type) before using it; if you cannot verify '
       + 'one, leave it an empty string. No markup, no HTML.';
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (sample ? 'Sample existing card text (match this style/length): ' + sample + '\n' : '')
       + 'Number of cards: ' + count + '\n'
-      + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page')
-      + '\n\nReturn only the JSON object.';
+      + 'Recommendations to show: ' + (intent && intent.trim() ? intent.trim() : 'a few relevant items for this page') + '\n'
+      + libraryForPrompt(intent)
+      + '\nReturn only the JSON object.';
     const parsed = await aiAgent(
       system + '\n\n' + prompt,
       { cards: [{ image: 'string', lines: ['string'] }] },
@@ -4044,6 +4438,7 @@ Config -> Save/load story -> Import.`;
     preApplyPaintedRules();
     renderPanel();
     installNavigationHooks();
+    installImageHarvest();
     // If trainer mode was on last session, re-enable it now that DOM is ready.
     if (ui.trainer) refreshTrainer();
     console.info('[personalise] engine ready', { client: config.client, mode: ui.mode, state });
