@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Personalise (rimantas757/web_perso_sim)
 // @namespace    https://rimantas757.github.io/web_perso_sim
-// @version      2026.10.23.0929
-// @description  Client-side personalisation engine — tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
+// @version      2026.11.04.0940
+// @description  Client-side personalisation engine: tag pages, score topics, replace heroes/banners by named slot, fire swap/popup/script actions.
 // @author       rimantas757
 // @match        *://*/*
 // @run-at       document-start
@@ -176,6 +176,11 @@
   let config = loadJSON(CONFIG_STORAGE_KEY, null);
   if (!config) { config = defaultConfig(); saveJSON(CONFIG_STORAGE_KEY, config); }
   let state = loadJSON(STATE_STORAGE_KEY, { scores: {}, firedRules: [], scoredUrls: [] });
+  // A partial or hand-edited state must not stop the engine from booting.
+  if (!state || typeof state !== 'object') state = {};
+  if (!state.scores || typeof state.scores !== 'object') state.scores = {};
+  if (!Array.isArray(state.firedRules)) state.firedRules = [];
+  if (!Array.isArray(state.scoredUrls)) state.scoredUrls = [];
   let ui = loadJSON(UI_STORAGE_KEY, { mode: 'runtime', collapsed: false });
   // Claude Gateway connection (per-SE machine settings — kept in `ui` so they
   // are NOT exported with a story and NOT clobbered by importing one).
@@ -1039,7 +1044,7 @@
       wrap.addEventListener('submit', (e) => {
         e.preventDefault(); e.stopPropagation();
         const thanks = document.createElement('div'); thanks.className = 'pp-rp__thanks';
-        thanks.textContent = 'Thanks \u2014 we\u2019ll be in touch.';
+        thanks.textContent = 'Thanks, we\u2019ll be in touch.';
         content.replaceChildren(thanks);
         if (rule.action.revealAvatar && !state.identified) {
           state.identified = true; saveState(); renderPanel();
@@ -1625,6 +1630,8 @@
       box-shadow: 0 20px 60px rgba(0,0,0,0.4); }
     #pp-ai-modal h3 { margin: 0 0 4px; font: 600 20px/1.3 Georgia, "Merriweather", serif; }
     #pp-ai-modal .pp-ai-sub { color: #666; margin-bottom: 16px; font-size: 12px; }
+    #pp-ai-modal .pp-ai-note { margin: -6px 0 16px; padding: 10px 12px; border-radius: 10px; background: #fff4e5;
+      border: 1px solid #ffd8a8; color: #8a4b00; font-size: 12px; line-height: 1.45; }
     #pp-ai-modal .pp-ai-label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #555; }
     #pp-ai-modal .pp-ai-label--gap { margin-top: 20px; }
     #pp-ai-modal textarea { width: 100%; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1755,7 +1762,7 @@
     if (pickState) return;
     const overlay = document.createElement('div'); overlay.id = 'pp-pick-overlay';
     const hint = document.createElement('div'); hint.id = 'pp-pick-hint';
-    hint.innerHTML = 'Click any element to capture its selector \u2014 press <kbd>Esc</kbd> to cancel';
+    hint.innerHTML = 'Click any element to capture its selector. Press <kbd>Esc</kbd> to cancel';
     document.body.appendChild(overlay);
     document.body.appendChild(hint);
     document.body.classList.add('pp-picking');
@@ -1858,7 +1865,7 @@
         }
         cell.dataset.find = (alt + ' ' + (im.page || '') + ' ' + (im.title || '')).toLowerCase();
         cell.appendChild(thumb); cell.appendChild(meta);
-        cell.title = im.kind === 'video' ? (im.src + '  — video; replace it with a video (.mp4)')
+        cell.title = im.kind === 'video' ? (im.src + '  (video: replace it with a video, .mp4)')
           : im.kind === 'lib' ? ((alt ? alt + '\n' : '') + 'Seen on ' + (im.page || '?')) : im.src;
         if (im.kind === 'video') { const badge = document.createElement('span'); badge.className = 'pp-ig-vbadge'; badge.textContent = '▶'; cell.appendChild(badge); }
         // Hover highlights the real element on the page so the SE can confirm.
@@ -1954,7 +1961,7 @@
       e.stopPropagation(); close();
       startPick((sel, elc) => {
         const row = detectCardRows().find(r => r.container.contains(elc));
-        if (!row) { alert('That isn’t inside a row of cards — try clicking one of the cards.'); return; }
+        if (!row) { alert('That isn’t inside a row of cards. Try clicking one of the cards.'); return; }
         const template = rowTemplate(row);
         onPicked(row, template, row.cardEls.map(c => readCard(c, template)));
       });
@@ -2194,7 +2201,7 @@
     else panel.classList.remove('has-avatar');
 
     // Preserve the body's scroll position across the full rebuild so adding a
-    // card, "Design with gateway", etc. don't jump the SE back to the top.
+    // card, "Design with AI", etc. don't jump the SE back to the top.
     const prevBody = document.getElementById('pp-panel__body');
     const prevScroll = prevBody ? prevBody.scrollTop : 0;
 
@@ -2446,7 +2453,7 @@
 
     const rulesCard = section(body, 'Rules');
     const ruleList = el('ul');
-    if (!config.thresholdRules.length) ruleList.appendChild(el('li', { className: 'pp-empty', text: 'No rules yet — add them in Build' }));
+    if (!config.thresholdRules.length) ruleList.appendChild(el('li', { className: 'pp-empty', text: 'No rules yet. Add them in Build' }));
     else {
       for (const r of config.thresholdRules) {
         const li = el('li', { className: 'pp-live-rule' });
@@ -2519,8 +2526,10 @@
     }
     descInput.addEventListener('input', autoSize);
     descInput.addEventListener('change', () => { rule.description = descInput.value; saveConfig(); });
-    // Run once inserted (scrollHeight requires DOM attachment)
-    setTimeout(autoSize, 0);
+    // Run once inserted (scrollHeight requires DOM attachment): a microtask runs
+    // after renderPanel attaches the panel but before the browser paints, so
+    // the box never shows at one line and then jumps.
+    Promise.resolve().then(autoSize);
     const delBtn = el('button', { className: 'pp-icon', text: '\u00D7', ariaLabel: 'Delete rule' });
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2664,7 +2673,7 @@
         vidInput.addEventListener('change', () => { rule.action.video = vidInput.value; saveConfig(); });
         vidField.appendChild(vidInput);
         wrap.appendChild(vidField);
-        wrap.appendChild(el('div', { className: 'pp-hint', text: 'Video target \u2014 use an .mp4 (plays muted).' }));
+        wrap.appendChild(el('div', { className: 'pp-hint', text: 'Video target: use an .mp4 (plays muted).' }));
       } else {
         // Replace with: pick from every image collected on this site, or paste a URL.
         const withField = el('div', { className: 'pp-thr-field' });
@@ -2746,15 +2755,15 @@
       wrap.appendChild(revealLabel);
       if (rule.action.revealAvatar) {
         wrap.appendChild(el('div', { className: 'pp-rule-meta', text: !config.avatarUrl
-          ? 'No persona avatar set yet — pick one under Config → Persona avatar.'
+          ? 'No persona avatar set yet. Pick one under Config → Persona avatar.'
           : config.avatarHidden
             ? 'Submitting this form reveals the hidden persona avatar.'
-            : 'Avatar is already visible — tick “Hide until identified” under Persona avatar to hide it first.' }));
+            : 'Avatar is already visible. Tick “Hide until identified” under Persona avatar to hide it first.' }));
       }
 
-      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Design with gateway') });
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Design with AI') });
       wrap.appendChild(designBtn);
-      const designStatus = el('div', { className: 'pp-hint', text: rule.action.html ? '\u2713 Design ready \u2014 Test now to preview' : '' });
+      const designStatus = el('div', { className: 'pp-hint', text: rule.action.html ? '\u2713 Design ready. Test now to preview' : '' });
       wrap.appendChild(designStatus);
       designBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -2851,7 +2860,7 @@
       intentField.appendChild(intentArea);
       wrap.appendChild(intentField);
 
-      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Draft cards with gateway') });
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('✨ Draft cards with AI') });
       wrap.appendChild(designBtn);
       const designStatus = el('div', { className: 'pp-hint', text: '' });
       wrap.appendChild(designStatus);
@@ -2944,7 +2953,7 @@
       intentField.appendChild(intentArea);
       wrap.appendChild(intentField);
 
-      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('\u2728 Design with gateway') });
+      const designBtn = el('button', { className: 'pp-btn pp-btn--full', text: aiButtonText('\u2728 Design with AI') });
       wrap.appendChild(designBtn);
       const designStatus = el('div', { className: 'pp-hint', text: '' });
       wrap.appendChild(designStatus);
@@ -2962,7 +2971,7 @@
       });
 
       const codeField = el('div');
-      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JavaScript \u2014 review, then Test now' });
+      const codeLabel = el('div', { className: 'pp-rule-meta', text: 'JavaScript: review, then Test now' });
       codeLabel.title = 'Runs in the page with rule and ctx in scope: ctx.$(sel), ctx.$$(sel), ctx.state, ctx.config, ctx.log(\u2026). Normal DOM/fetch APIs too.';
       const codeArea = el('textarea', { className: 'pp-code' });
       codeArea.value = rule.action.code || '';
@@ -2982,7 +2991,7 @@
       const fn = actions[rule.action.type];
       if (!fn) { alert('Unknown action type: ' + rule.action.type); return; }
       const ok = fn(rule);
-      if (!ok) alert('Rule ran but returned no effect \u2014 check selector / URL / console.');
+      if (!ok) alert('Rule ran but returned no effect. Check selector / URL / console.');
     });
     rowActions.appendChild(testBtn);
     wrap.appendChild(rowActions);
@@ -3005,7 +3014,7 @@
     let body = root;
     // AI author \u2014 first thing in Config so it's discoverable
     body = section(root, 'AI author');
-    const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Generate config with AI' });
+    const aiBtn = el('button', { className: 'pp-btn pp-btn--full', text: '\u2728 Author full experience with AI' });
     aiBtn.classList.add('pp-btn--primary');
     aiBtn.addEventListener('click', (e) => { e.stopPropagation(); openAiPromptModal(); });
     body.appendChild(aiBtn);
@@ -3013,7 +3022,7 @@
     // Topics
     body = section(root, 'Topics');
     const topicList = el('ul');
-    if (!config.topics.length) topicList.appendChild(el('li', { className: 'pp-empty', text: 'No topics \u2014 add one below' }));
+    if (!config.topics.length) topicList.appendChild(el('li', { className: 'pp-empty', text: 'No topics yet. Add one below' }));
     else {
       for (const t of config.topics) {
         const li = el('li');
@@ -3179,7 +3188,7 @@
   // -------------------- Settings view --------------------
   function renderSettings(root) {
     let body = root;
-    // Claude Gateway \u2014 connect the inline "Generate with gateway" button.
+    // Claude Gateway \u2014 connect the inline "Design with AI" buttons.
     // Stored in `ui` (local only): never exported with a story, never clobbered
     // by importing one.
     body = section(root, 'Claude Gateway');
@@ -3196,7 +3205,7 @@
       const orig = connectBtn.textContent; connectBtn.disabled = true; connectBtn.textContent = 'Connecting…';
       try {
         const out = await bootstrapFromLocalGateway();
-        connectStatus.textContent = '✓ Connected — using ' + out.url;
+        connectStatus.textContent = '✓ Connected: ' + out.url;
         renderPanel();
       } catch (err) {
         connectBtn.disabled = false; connectBtn.textContent = orig;
@@ -3240,7 +3249,7 @@
     // the userscript @match, so it survives Tampermonkey auto-updates.
     body = section(root, 'Where it runs');
     const stopBtn = el('button', { className: 'pp-btn pp-btn--full pp-btn--danger', text: 'Stop running on this site' });
-    stopBtn.title = 'Removes this site from the allowlist and reloads \u2014 the panel goes dormant here';
+    stopBtn.title = 'Removes this site from the allowlist and reloads; the panel goes dormant here';
     stopBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleCurrentSite(); });
     const sites = getAllowedSites();
     const siteList = el('ul');
@@ -3285,8 +3294,8 @@
     body.appendChild(hideLabel);
     if (config.avatarHidden) {
       const revealers = (config.thresholdRules || []).filter(r => r.action && r.action.type === 'richPopup' && r.action.revealAvatar).length;
-      body.appendChild(el('div', { className: 'pp-hint', text: state.identified ? '✓ Identified — avatar showing'
-        : (revealers ? 'Hidden until a form is submitted' : 'No popup reveals it yet — tick “Reveals persona avatar” on one') }));
+      body.appendChild(el('div', { className: 'pp-hint', text: state.identified ? '✓ Identified, avatar showing'
+        : (revealers ? 'Hidden until a form is submitted' : 'No popup reveals it yet. Tick “Reveals persona avatar” on one') }));
     }
 
     urlInput.addEventListener('change', () => {
@@ -3417,17 +3426,22 @@
     const slots = (typeof discoverSlots === 'function') ? discoverSlots() : [];
     const slotList = slots.length
       ? slots.map(s => `  - ${s.name}${s.kind === 'section' ? ' (section)' : ''}`).join('\n')
-      : '  (none found on this page — use CSS selectors instead)';
+      : '  (none found on this page; use CSS selectors instead)';
 
     const intent = userIntent && userIntent.trim()
       ? userIntent.trim()
       : '<< Describe what you want the personalisation to accomplish. Examples:\n'
-        + '   - "Boost Sri Lanka interest \u2014 swap homepage hero and CTA copy for anyone who has viewed 3+ Sri Lanka pages."\n'
+        + '   - "Boost Sri Lanka interest: swap homepage hero and CTA copy for anyone who has viewed 3+ Sri Lanka pages."\n'
         + '   - "Highlight family holidays for repeat visitors who\'ve clicked family destinations."\n'
-        + '   - "Nudge premium travel \u2014 show a popup with a concierge CTA after 5 luxury-tier page views." >>';
+        + '   - "Nudge premium travel: show a popup with a concierge CTA after 5 luxury-tier page views." >>';
 
     return `You are helping author a JSON config for a client-side website
 personalisation engine called Personalise (web_perso_story format).
+
+IMPORTANT: you must open and read the site's real pages (web browsing / URL
+fetching) to do this. Every selector, URL, image and line of copy must come
+from pages you actually loaded. If you cannot open web pages, say so and stop
+instead of guessing.
 
 TARGET SITE
 Base URL: ${origin || '(unknown \u2014 user is running locally)'}
@@ -3556,7 +3570,7 @@ STRING ENCODING (IMPORTANT - do not skip)
   non-ASCII character (em dash, arrow, sparkles, curly quotes, accented
   letters, any emoji), encode it as a JSON \\uXXXX escape sequence.
   Examples (left = what to output, right = what it decodes to for the user):
-    "Sri Lanka \\u2014 cultural triangle"     ->  Sri Lanka + em dash + cultural triangle
+    "Sri Lanka: cultural triangle"            ->  plain punctuation, no dashes
     "\\u2728 Highlight for repeat visitors"    ->  sparkles + Highlight...
     "Caf\\u00e9 & Concierge"                    ->  Caf + e-acute + " & Concierge"
     "Ready \\u2192 start your journey"        ->  Ready + right-arrow + start...
@@ -3564,6 +3578,8 @@ STRING ENCODING (IMPORTANT - do not skip)
   clipboard / editor / import pipelines and render as mojibake in the UI.
 - Never use "smart" curly quotes or typographic dashes; prefer plain
   ASCII ' " - unless the \\uXXXX escape form is used.
+- NO DASHES IN COPY: never use em dashes or en dashes in any label, name,
+  description or visitor-facing text. Use a colon, a comma or a new sentence.
 - JSON parsers decode \\uXXXX to the correct Unicode codepoint at parse
   time, so the escaped form displays exactly the same to the user AND is
   immune to encoding pipeline corruption.
@@ -3605,8 +3621,8 @@ Config -> Save/load story -> Import.`;
   }
   function fetchFailureHint() {
     return isCrossOrigin()
-      ? 'unreachable, or the browser blocked it (CORS). If curl works but this does not, the gateway needs CORS headers — see gateway-cors-patch.md.'
-      : 'unreachable — is it running?';
+      ? 'unreachable, or the browser blocked it (CORS). If curl works but this does not, the gateway needs CORS headers (see gateway-cors-patch.md).'
+      : 'unreachable. Is it running?';
   }
 
   // GET /health — no key needed. Returns { ok, reason } (never throws) so the
@@ -3627,7 +3643,7 @@ Config -> Save/load story -> Import.`;
   // callers can show it to the SE.
   async function gatewayComplete(prompt, system) {
     const key = gatewayKey();
-    if (!key) throw new Error('No gateway key set — add it in Config → Claude Gateway.');
+    if (!key) throw new Error('No gateway key set. Add it in Settings → Claude Gateway.');
     let r;
     try {
       r = await fetch(gatewayBaseUrl() + '/complete', {
@@ -3638,7 +3654,7 @@ Config -> Save/load story -> Import.`;
     } catch (e) {
       throw new Error('Gateway at ' + gatewayBaseUrl() + ' ' + fetchFailureHint());
     }
-    if (r.status === 401) throw new Error('Gateway rejected the key (401) — check / refresh it.');
+    if (r.status === 401) throw new Error('Gateway rejected the key (401). Check or refresh it.');
     if (!r.ok) throw new Error('Gateway error ' + r.status);
     const j = await r.json().catch(() => ({}));
     if (typeof j.text !== 'string') throw new Error('Gateway returned no text.');
@@ -3687,7 +3703,7 @@ Config -> Save/load story -> Import.`;
   async function bootstrapFromLocalGateway() {
     const url = bootstrapUrl() + '/bootstrap';
     const res = hasGM() ? await gatewayGM('GET', url, 8000) : await bootstrapFetch(url, 8000);
-    if (res.status === 404) throw new Error('Gateway has no /bootstrap endpoint — see gateway-bootstrap-patch.md.');
+    if (res.status === 404) throw new Error('Gateway has no /bootstrap endpoint (see gateway-bootstrap-patch.md).');
     if (res.status < 200 || res.status >= 300) throw new Error('Bootstrap returned HTTP ' + res.status + ' (is the local gateway running?).');
     let j;
     try { j = JSON.parse(res.text); } catch (e) { throw new Error('Bootstrap returned invalid JSON.'); }
@@ -3747,7 +3763,7 @@ Config -> Save/load story -> Import.`;
       + '<iframe>, no external stylesheets or JS, no tracking. Inline SVG/text is fine. '
       + 'Keep it one centered modal’s worth of markup (no backdrop/close button — the host adds those). '
       + 'If a form is requested, include labelled inputs and a submit button (the host '
-      + 'intercepts submit). CSS selectors should target classes you define inside the popup.';
+      + 'intercepts submit). CSS selectors should target classes you define inside the popup. In all visible text, never use em dashes or en dashes; use a colon, a comma or a new sentence.';
     const prompt = 'Website: ' + host + '\n'
       + 'Page URL: ' + location.href + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
@@ -3805,7 +3821,7 @@ Config -> Save/load story -> Import.`;
       const system = 'You write content for a row of recommendation cards on a web page. '
         + 'Return ONLY a JSON object: {"cards":[{' + keys.map(k => '"' + k + '":"..."').join(',') + '}]}. Fields:\n'
         + keys.map(k => '- ' + (describe[k] || ('"' + k + '": another short text line in the same style as the examples'))).join('\n')
-        + '\nMatch the length and tone of the example cards. No markup, no HTML.';
+        + '\nMatch the length and tone of the example cards. No markup, no HTML, no em or en dashes.';
       const prompt = 'Website: ' + host + '\n'
         + (document.title ? 'Page title: ' + document.title + '\n' : '')
         + (current.length ? 'Example cards currently in this row (match their style):\n' + JSON.stringify(current.slice(0, 3).map(pick), null, 1) + '\n' : '')
@@ -3836,7 +3852,7 @@ Config -> Save/load story -> Import.`;
       + 'title/subtitle, one-line blurb). Match the length and tone of the sample card text. '
       + 'For "image", prefer one of the website\'s own images listed below when one fits; otherwise find a public, hotlink-safe image matching the card and VERIFY the URL '
       + 'actually resolves (HTTP 200, image content-type) before using it; if you cannot verify '
-      + 'one, leave it an empty string. No markup, no HTML.';
+      + 'one, leave it an empty string. No markup, no HTML, no em or en dashes.';
     const prompt = 'Website: ' + host + '\n'
       + (document.title ? 'Page title: ' + document.title + '\n' : '')
       + (sample ? 'Sample existing card text (match this style/length): ' + sample + '\n' : '')
@@ -3954,7 +3970,7 @@ Config -> Save/load story -> Import.`;
   // JSON (j.result, else fence-tolerant parse of j.text). Long timeout.
   async function gatewayAgent(task, schema, context) {
     const key = gatewayKey();
-    if (!key) throw new Error('No gateway key set — add it in Config → Claude Gateway.');
+    if (!key) throw new Error('No gateway key set. Add it in Settings → Claude Gateway.');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 180000); // agent loops are slow
     // Gzip the body at the transport level (Content-Encoding: gzip) so large
@@ -3986,8 +4002,8 @@ Config -> Save/load story -> Import.`;
       throw new Error('Gateway at ' + gatewayBaseUrl() + ' ' + fetchFailureHint());
     }
     clearTimeout(timer);
-    if (r.status === 404) throw new Error('Gateway has no /agent endpoint — see gateway-agent-patch.md.');
-    if (r.status === 401) throw new Error('Gateway rejected the key (401) — check / refresh it.');
+    if (r.status === 404) throw new Error('Gateway has no /agent endpoint (see gateway-agent-patch.md).');
+    if (r.status === 401) throw new Error('Gateway rejected the key (401). Check or refresh it.');
     if (!r.ok) throw new Error('Gateway agent error ' + r.status);
     const j = await r.json().catch(() => ({}));
     // Text mode: no schema requested -> return the raw text (fence-stripped) as a
@@ -4049,7 +4065,7 @@ Config -> Save/load story -> Import.`;
     if (a !== -1 && b > a) {
       try { return JSON.parse(stripped.slice(a, b + 1)); } catch (e) { /* fall through */ }
     }
-    throw new Error('That isn’t valid JSON — paste only the JSON object the AI returned.');
+    throw new Error('That isn’t valid JSON. Paste only the JSON object the AI returned.');
   }
 
   function openManualAiModal(prompt, schema) {
@@ -4064,7 +4080,7 @@ Config -> Save/load story -> Import.`;
 
       const title = document.createElement('h3'); title.textContent = 'Author with AI';
       const sub = document.createElement('div'); sub.className = 'pp-ai-sub';
-      sub.textContent = 'Gateway not connected — copy the full prompt into ChatGPT/Claude, then paste its answer back here.';
+      sub.textContent = 'Gateway not connected. Copy the full prompt into ChatGPT/Claude, then paste its answer back here.';
 
       const promptLabel = document.createElement('label'); promptLabel.className = 'pp-ai-label';
       promptLabel.textContent = '1. Copy the full prompt';
@@ -4098,7 +4114,7 @@ Config -> Save/load story -> Import.`;
           setTimeout(() => { copyBtn.textContent = '📋 Copy prompt'; }, 1500);
         } catch (e) {
           promptArea.focus(); promptArea.select();
-          err.textContent = 'Clipboard blocked — the prompt is selected, press Ctrl/Cmd+C.';
+          err.textContent = 'Clipboard blocked. The prompt is selected, press Ctrl/Cmd+C.';
         }
       });
       applyBtn.addEventListener('click', () => {
@@ -4121,26 +4137,23 @@ Config -> Save/load story -> Import.`;
     const closeBtn = document.createElement('button');
     closeBtn.className = 'pp-ai-close'; closeBtn.textContent = '\u00D7'; closeBtn.setAttribute('aria-label', 'Close');
 
-    const title = document.createElement('h3'); title.textContent = 'AI-author a config';
+    // Copy / paste only: authoring a whole experience means crawling the site,
+    // which the gateway can't do, so the prompt goes to an AI that browses.
+    const title = document.createElement('h3'); title.textContent = 'Author full experience with AI';
     const sub = document.createElement('div'); sub.className = 'pp-ai-sub';
-    sub.textContent = 'Describe what you want — Generate with gateway drafts and verifies it (can take a bit), or copy the prompt into ChatGPT/Claude and paste the JSON back.';
+    sub.textContent = '1. Describe the experience.  2. Copy the prompt.  3. Paste it into an AI that can browse the web.  4. Paste its answer below and apply.';
+    const crawlNote = document.createElement('div'); crawlNote.className = 'pp-ai-note';
+    crawlNote.textContent = 'Important: the AI must be able to open the site’s pages (web browsing turned on, e.g. Claude with web search or ChatGPT with search or agent mode). It reads the real pages for selectors, links, images and copy. Without browsing it guesses, and the result won’t work well.';
 
     const intentLabel = document.createElement('label'); intentLabel.textContent = 'What should the personalisation do?';
     intentLabel.className = 'pp-ai-label';
     const intentArea = document.createElement('textarea'); intentArea.className = 'pp-ai-intent'; intentArea.rows = 3;
-    intentArea.placeholder = 'e.g. Boost Sri Lanka interest \u2014 swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
+    intentArea.placeholder = 'e.g. Boost Sri Lanka interest: swap the homepage hero and CTA for anyone who has viewed 3+ Sri Lanka pages.';
 
-    const genBtn = document.createElement('button'); genBtn.className = 'pp-btn'; genBtn.textContent = '\u26A1 Generate with gateway';
-    const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '\uD83D\uDCCB Copy prompt';
+    const copyBtn = document.createElement('button'); copyBtn.className = 'pp-btn'; copyBtn.textContent = '📋 Copy prompt';
 
     const rowA = document.createElement('div'); rowA.className = 'pp-ai-row';
-    if (gatewayKey()) rowA.appendChild(genBtn);
     rowA.appendChild(copyBtn);
-
-    const gwStatus = document.createElement('div'); gwStatus.className = 'pp-ai-sub'; gwStatus.style.marginTop = '6px';
-    gwStatus.textContent = gatewayKey()
-      ? 'Gateway: ' + gatewayBaseUrl()
-      : 'Gateway not connected \u2014 Copy prompt, run it in ChatGPT/Claude, and paste the JSON answer below.';
 
     const outLabel = document.createElement('label'); outLabel.textContent = 'Paste the AI\'s JSON response here';
     outLabel.className = 'pp-ai-label pp-ai-label--gap';
@@ -4154,10 +4167,10 @@ Config -> Save/load story -> Import.`;
     box.appendChild(closeBtn);
     box.appendChild(title);
     box.appendChild(sub);
+    box.appendChild(crawlNote);
     box.appendChild(intentLabel);
     box.appendChild(intentArea);
     box.appendChild(rowA);
-    box.appendChild(gwStatus);
     box.appendChild(outLabel);
     box.appendChild(outArea);
     box.appendChild(rowB);
@@ -4183,27 +4196,6 @@ Config -> Save/load story -> Import.`;
       applyImportedConfig(cfg);
     }
 
-    genBtn.addEventListener('click', async () => {
-      if (!gatewayKey()) { alert('No gateway key set — add it in Config → Claude Gateway first (or use Copy prompt).'); return; }
-      const original = genBtn.textContent;
-      genBtn.disabled = true; genBtn.textContent = 'Generating…';
-      try {
-        const prompt = buildAiPrompt(intentArea.value)
-          + '\n\nVerify that any image or link URLs you include actually resolve (HTTP 200); replace broken ones.';
-        // Route through the agent so it can self-verify URLs. It returns the
-        // parsed config object directly (schema-shaped).
-        const out = await gatewayAgent(prompt, { _kind: 'string', config: 'object' }, { host: location.host });
-        outArea.value = JSON.stringify(out, null, 2); // show what came back, so the SE can inspect/tweak
-        parseAndApply(out);
-        genBtn.textContent = 'Applied ✓';
-        setTimeout(close, 700);
-      } catch (err) {
-        genBtn.disabled = false; genBtn.textContent = original;
-        alert('Gateway generate failed: ' + err.message
-          + (outArea.value ? '\n\nThe raw response is in the box below — you can fix and Apply it manually.' : ''));
-      }
-    });
-
     copyBtn.addEventListener('click', async () => {
       const prompt = buildAiPrompt(intentArea.value);
       try {
@@ -4213,7 +4205,7 @@ Config -> Save/load story -> Import.`;
       } catch (err) {
         // Fallback: fill outArea so user can copy manually
         outArea.value = prompt; outArea.focus(); outArea.select();
-        alert('Clipboard blocked \u2014 prompt placed in the response box. Copy from there.');
+        alert('Clipboard blocked. The prompt is in the response box. Copy from there.');
       }
     });
 
@@ -4287,7 +4279,17 @@ Config -> Save/load story -> Import.`;
 
   // -------------------- SPA navigation --------------------
   function installNavigationHooks() {
-    const emit = () => window.dispatchEvent(new Event('personalise:navigate'));
+    // Only a real page change counts. News sites call replaceState constantly
+    // (scroll tracking, ad refreshes) with the same URL; reacting to each one
+    // rebuilt the panel many times a second and made it twitch.
+    const pageOf = () => location.href.replace(/#.*$/, '');
+    let lastPage = pageOf();
+    const emit = () => {
+      const now = pageOf();
+      if (now === lastPage) return;
+      lastPage = now;
+      window.dispatchEvent(new Event('personalise:navigate'));
+    };
     const origPush = history.pushState;
     const origReplace = history.replaceState;
     history.pushState = function () { const r = origPush.apply(this, arguments); emit(); return r; };
